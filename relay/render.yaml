@@ -2,6 +2,7 @@ services:
   - type: web
     name: photoshop-gpt-bridge
     runtime: node
+    plan: free
     rootDir: relay
     buildCommand: npm install
     startCommand: npm start
