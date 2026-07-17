@@ -38,7 +38,7 @@
     "localFileSystem": "request",
     "network": {
       "domains": [
-        "https://YOUR-RELAY-DOMAIN.example.com"
+        "https://photoshop-gpt-bridge.onrender.com"
       ]
     }
   }

@@ -7,7 +7,7 @@ info:
     read-only. Smart Object replacement requires approval inside Photoshop and
     always saves a new PSD copy.
 servers:
-  - url: https://YOUR-RELAY-DOMAIN.example.com
+  - url: https://photoshop-gpt-bridge.onrender.com
 security:
   - bearerAuth: []
 paths:
