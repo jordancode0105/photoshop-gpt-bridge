@@ -5,8 +5,8 @@
   "description": "Secure relay between a private Custom GPT Action and a local Photoshop UXP plugin.",
   "main": "src/server.js",
   "scripts": {
-    "start": "node src/server.js",
-    "dev": "node --watch src/server.js"
+    "start": "node --env-file=.env src/server.js",
+    "dev": "node --env-file=.env --watch src/server.js"
   },
   "engines": {
     "node": ">=20"
