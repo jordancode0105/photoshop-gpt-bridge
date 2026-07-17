@@ -1,0 +1,45 @@
+{
+  "manifestVersion": 5,
+  "id": "com.private.photoshop-gpt-bridge",
+  "name": "Photoshop GPT Bridge",
+  "version": "0.1.0",
+  "main": "index.html",
+  "host": {
+    "app": "PS",
+    "minVersion": "25.0.0",
+    "data": {
+      "apiVersion": 2,
+      "loadEvent": "use",
+      "enableMenuRecording": true
+    }
+  },
+  "entrypoints": [
+    {
+      "type": "panel",
+      "id": "photoshopGptBridgePanel",
+      "label": {
+        "default": "Photoshop GPT Bridge"
+      },
+      "minimumSize": {
+        "width": 280,
+        "height": 380
+      },
+      "preferredDockedSize": {
+        "width": 320,
+        "height": 520
+      },
+      "preferredFloatingSize": {
+        "width": 360,
+        "height": 560
+      }
+    }
+  ],
+  "requiredPermissions": {
+    "localFileSystem": "request",
+    "network": {
+      "domains": [
+        "https://YOUR-RELAY-DOMAIN.example.com"
+      ]
+    }
+  }
+}

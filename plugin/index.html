@@ -1,0 +1,65 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Photoshop GPT Bridge</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <main>
+      <h1>Photoshop GPT Bridge</h1>
+
+      <section class="card">
+        <label for="relayUrl">Relay URL</label>
+        <input id="relayUrl" type="text" placeholder="https://your-service.example.com" />
+
+        <label for="deviceToken">Device token</label>
+        <input id="deviceToken" type="password" placeholder="Separate plugin device secret" />
+
+        <div class="row">
+          <button id="saveSettings">Save settings</button>
+          <button id="testConnection" class="secondary">Test</button>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="row between">
+          <div>
+            <strong>Working folder</strong>
+            <div id="folderStatus" class="muted">Not selected</div>
+          </div>
+          <button id="chooseFolder" class="secondary">Choose</button>
+        </div>
+        <p class="muted">
+          Put replacement assets here. New PSD and PNG files are written here.
+        </p>
+      </section>
+
+      <section class="card">
+        <div class="row between">
+          <div>
+            <strong>Bridge</strong>
+            <div id="connectionStatus" class="status offline">Disconnected</div>
+          </div>
+          <button id="toggleConnection">Connect</button>
+        </div>
+      </section>
+
+      <section id="jobCard" class="card hidden">
+        <h2>Pending Photoshop job</h2>
+        <pre id="jobDetails"></pre>
+        <div id="approvalButtons" class="row hidden">
+          <button id="approveJob">Approve</button>
+          <button id="rejectJob" class="danger">Reject</button>
+        </div>
+      </section>
+
+      <section class="card">
+        <strong>Activity</strong>
+        <pre id="log"></pre>
+      </section>
+    </main>
+
+    <script src="index.js"></script>
+  </body>
+</html>

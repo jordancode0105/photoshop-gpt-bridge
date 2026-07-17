@@ -1,0 +1,181 @@
+openapi: 3.1.0
+info:
+  title: Private Photoshop Bridge
+  version: 0.1.0
+  description: >
+    Queues narrowly scoped Photoshop jobs for a local UXP plugin. Inspection is
+    read-only. Smart Object replacement requires approval inside Photoshop and
+    always saves a new PSD copy.
+servers:
+  - url: https://YOUR-RELAY-DOMAIN.example.com
+security:
+  - bearerAuth: []
+paths:
+  /api/jobs/inspect-document:
+    post:
+      operationId: inspectPhotoshopDocument
+      summary: Inspect the open Photoshop document and its complete layer tree
+      description: >
+        Queue a read-only inspection. After receiving the jobId, call
+        getPhotoshopJobStatus until the job succeeds or fails.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                documentName:
+                  type: string
+                  description: Optional exact Photoshop document title. Omit to use the active document.
+      responses:
+        "202":
+          description: Inspection queued
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QueuedJob"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+
+  /api/jobs/replace-smart-object:
+    post:
+      operationId: replacePhotoshopSmartObject
+      summary: Replace a Smart Object, save a new PSD copy, and export a PNG preview
+      description: >
+        Queue a consequential write operation. Use a layerId returned by inspection
+        whenever possible. The user must approve the operation in Photoshop.
+        Never choose an outputPsdName that matches the original document.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required:
+                - replacementFileName
+                - outputPsdName
+                - outputPreviewName
+              properties:
+                documentName:
+                  type: string
+                  description: Optional exact document title. Omit to use the active document.
+                layerId:
+                  type: integer
+                  minimum: 1
+                  description: Preferred stable layer ID returned by document inspection.
+                layerName:
+                  type: string
+                  description: Exact layer name; use only when layerId is unavailable.
+                replacementFileName:
+                  type: string
+                  description: >
+                    File name only, not a path. The file must be inside the
+                    user-approved Photoshop Bridge working folder.
+                fitMode:
+                  type: string
+                  enum: [contain, cover, keep-transform]
+                  default: contain
+                outputPsdName:
+                  type: string
+                  pattern: '^[^\\/]+\.psd$'
+                  description: New output file name. Never overwrite the original.
+                outputPreviewName:
+                  type: string
+                  pattern: '^[^\\/]+\.png$'
+      responses:
+        "202":
+          description: Write operation queued for local approval
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QueuedJob"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+
+  /api/jobs/{jobId}:
+    get:
+      operationId: getPhotoshopJobStatus
+      summary: Get the current status and result of a Photoshop job
+      parameters:
+        - name: jobId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Current job state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/JobStatus"
+        "401":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+
+  schemas:
+    QueuedJob:
+      type: object
+      required: [jobId, status, message]
+      properties:
+        jobId:
+          type: string
+        status:
+          type: string
+        message:
+          type: string
+
+    JobStatus:
+      type: object
+      required:
+        - id
+        - type
+        - status
+        - requiresConfirmation
+        - createdAt
+        - updatedAt
+      properties:
+        id:
+          type: string
+        type:
+          type: string
+        status:
+          type: string
+          enum: [pending, claimed, succeeded, failed]
+        requiresConfirmation:
+          type: boolean
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        result:
+          description: Operation-specific result, including a layer tree or output file locations.
+        error:
+          type: [string, "null"]
+
+  responses:
+    Error:
+      description: Error response
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              error:
+                type: string

@@ -1,0 +1,99 @@
+body {
+  margin: 0;
+  padding: 12px;
+  background: var(--uxp-host-background-color);
+  color: var(--uxp-host-text-color);
+  font-size: var(--uxp-host-font-size);
+  font-family: Arial, sans-serif;
+}
+
+main {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+h1 {
+  margin: 0 0 4px;
+  font-size: 18px;
+}
+
+h2 {
+  margin: 0 0 8px;
+  font-size: 14px;
+}
+
+.card {
+  padding: 10px;
+  border: 1px solid var(--uxp-host-border-color);
+  border-radius: 6px;
+}
+
+label {
+  display: block;
+  margin: 8px 0 4px;
+}
+
+input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 6px;
+}
+
+button {
+  padding: 6px 10px;
+  border-radius: 4px;
+}
+
+.row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-top: 10px;
+}
+
+.between {
+  justify-content: space-between;
+  margin-top: 0;
+}
+
+.secondary {
+  opacity: 0.9;
+}
+
+.danger {
+  background: #8d1a1a;
+  color: white;
+}
+
+.muted {
+  opacity: 0.72;
+  font-size: 11px;
+  margin-top: 4px;
+}
+
+.status {
+  margin-top: 4px;
+  font-size: 11px;
+}
+
+.online {
+  color: #67d47d;
+}
+
+.offline {
+  color: #ef7b7b;
+}
+
+.hidden {
+  display: none;
+}
+
+pre {
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 210px;
+  overflow: auto;
+  font-size: 10px;
+  margin: 8px 0 0;
+}

@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: photoshop-gpt-bridge
+    runtime: node
+    rootDir: relay
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_VERSION
+        value: 20
+      - key: GPT_ACTION_API_KEY
+        sync: false
+      - key: PHOTOSHOP_DEVICE_TOKEN
+        sync: false
+      - key: JOB_TTL_MINUTES
+        value: 60
