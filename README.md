@@ -1,11 +1,14 @@
 # Private Custom GPT to Photoshop Bridge
 
-This project exposes four narrowly scoped Photoshop operations:
+This project exposes seven narrowly scoped Photoshop operations:
 
 1. Inspect an active or exactly named open document and return its complete layer tree.
 2. Replace one ID- or name-addressed Smart Object, then save a new layered PSD and PNG preview.
 3. Apply allowlisted Color Overlay recolors to 1 through 25 exact layer IDs, then save a new layered PSD and flattened PNG preview.
 4. Replace content in 1 through 25 uniformly styled text layers, then save a new layered PSD and flattened PNG preview.
+5. Export a read-only flattened PNG preview of an open document.
+6. Export read-only isolated layer PNGs or a labeled contact sheet for up to 12 exact layer IDs.
+7. Rename up to 50 exact layer IDs in a new layered PSD copy and export its PNG preview.
 
 The relay does not call the OpenAI API. A private Custom GPT calls the relay through a GPT Action. A local PowerShell agent polls the relay and invokes a fixed ExtendScript worker through Photoshop COM automation.
 
@@ -29,8 +32,8 @@ Fixed ExtendScript worker -> open PSD + configured working folder
 
 - There are no arbitrary JavaScript, Action Manager descriptor, shell, process, path, or filesystem endpoints.
 - GPT and the local agent use separate secrets.
-- Request schemas reject malformed and unknown recolor or text-update fields.
-- Inspection is read-only. Every replacement, recolor, or text-update job requires the user to type exact `YES` locally.
+- Request schemas reject malformed and unknown fields for all new preview and rename operations.
+- Inspection and preview exports are read-only and run without a prompt. Every replacement, recolor, text-update, or rename job requires the user to type exact `YES` locally.
 - Write operations duplicate the document and never intentionally modify or save over the original.
 - Output names must be plain filenames. The local worker refuses to overwrite an existing PSD or PNG.
 - Jobs expire from the relay. Jobs are held in memory, so a relay restart clears them.
@@ -79,6 +82,75 @@ The OpenAPI document intentionally contains only caller-facing GPT operations. L
 Open a PSD and keep the local agent running. First request an inspection and wait for the `inspectPhotoshopDocument` job to succeed. Prefer numeric layer IDs from that result.
 
 For Smart Object replacement, provide the exact layer ID, a replacement filename already present in the configured working folder, a fit mode (`contain`, `cover`, or `keep-transform`), and versioned PSD/PNG names. Review the local payload and type `YES` to approve. Existing inspection and replacement behavior remains unchanged.
+
+## Export previews for visual identification
+
+Preview jobs are read-only, run without local `YES` approval, and write PNGs into the configured `WORKING_FOLDER`. Use versioned names because existing files are never overwritten. The relay and GPT receive output paths, not image pixels: upload the resulting PNG or contact sheet into the GPT chat before asking for visual conclusions.
+
+Export the whole open document as a flattened PNG:
+
+```powershell
+$headers = @{ Authorization = "Bearer YOUR_GPT_ACTION_API_KEY" }
+$body = @{
+    documentName = "RWCMatchCard.psd"
+    outputPreviewName = "RWCMatchCard_preview_v1.png"
+} | ConvertTo-Json
+$job = Invoke-RestMethod -Method Post -Uri "https://photoshop-gpt-bridge.onrender.com/api/jobs/export-document-preview" -Headers $headers -ContentType "application/json" -Body $body
+$job
+```
+
+After a fresh inspection, export exact layer IDs:
+
+```powershell
+$body = @{
+    documentName = "RWCMatchCard.psd"
+    layerIds = @(31, 53, 90)
+    mode = "contact-sheet"
+    marginPx = 40
+    baseOutputName = "candidate_layers_v1"
+} | ConvertTo-Json
+$job = Invoke-RestMethod -Method Post -Uri "https://photoshop-gpt-bridge.onrender.com/api/jobs/export-layer-previews" -Headers $headers -ContentType "application/json" -Body $body
+$job
+```
+
+The layer modes are:
+
+- `isolated-transparent`: hides unrelated layers, trims to visible pixels, and adds the requested transparent margin.
+- `isolated-on-canvas`: hides unrelated layers but retains the original canvas size and placement.
+- `contact-sheet`: creates one deterministic transparent PNG with labeled tiles for comparing candidates.
+
+Clipped layers retain their required clipping-base context where Photoshop exposes it. Each result includes the source layer ID, name, full path, and local output path. Deterministic filenames are `<base>_layer_<id>.png` or `<base>_contact_sheet.png`.
+
+Poll either preview job until completion:
+
+```powershell
+Invoke-RestMethod -Method Get -Uri "https://photoshop-gpt-bridge.onrender.com/api/jobs/$($job.jobId)" -Headers $headers
+```
+
+If candidates remain ambiguous, upload the exported images to the GPT chat and request a comparison. Do not treat a local path as visual evidence.
+
+## Clean up ambiguous layer names
+
+Use a fresh inspection, and preview uncertain candidates before renaming. Present old and proposed names first. Role-based names such as `SHOW LOGO - SMART OBJECT`, `LOWER THIRD LIGHT STRIP`, `FULL FRAME ATMOSPHERE`, and `MAIN EVENT TITLE` make later targeted edits safer.
+
+```powershell
+$headers = @{ Authorization = "Bearer YOUR_GPT_ACTION_API_KEY" }
+$body = @{
+    documentName = "RWCMatchCard.psd"
+    edits = @(
+        @{
+            layerId = 100
+            newName = "SHOW LOGO - SMART OBJECT"
+        }
+    )
+    outputPsdName = "RWCMatchCard_Renamed_v1.psd"
+    outputPreviewName = "RWCMatchCard_Renamed_v1.png"
+} | ConvertTo-Json -Depth 5
+$job = Invoke-RestMethod -Method Post -Uri "https://photoshop-gpt-bridge.onrender.com/api/jobs/rename-layers" -Headers $headers -ContentType "application/json" -Body $body
+$job
+```
+
+Review the full payload in the local-agent window and type uppercase `YES` exactly. The worker resolves all source IDs first, duplicates the document, renames by stable index path, saves a new layered PSD and PNG, and leaves the renamed PSD open. It preserves Unicode names and fails the whole job if an ID is stale, a requested name is not retained exactly, or either output exists.
 
 ## Recolor one layer safely
 
@@ -178,7 +250,7 @@ An intentionally empty string is allowed to clear a supported text layer. Tabs, 
 
 ## Optional legacy UXP panel
 
-The `plugin/` directory and packaged `dist/` artifact contain the earlier UXP panel. The PowerShell/COM/ExtendScript agent is the current path for `recolorLayers` and `updateTextLayers`. If the optional panel is used for its existing operations, configure its manifest network origin narrowly and load it with UXP Developer Tool.
+The `plugin/` directory and packaged `dist/` artifact contain the earlier UXP panel. The PowerShell/COM/ExtendScript agent is the current path for `recolorLayers`, `updateTextLayers`, preview export, and `renameLayers`. If the optional panel is used for its existing operations, configure its manifest network origin narrowly and load it with UXP Developer Tool.
 
 ## Development
 
@@ -189,6 +261,6 @@ Set-Location relay
 npm test
 ```
 
-Smart Object replacement and Color Overlay use Action Manager only where the Photoshop DOM lacks the required operation. Text updates use the DOM only after read-only style-range preflight. These behaviors require manual runtime verification against the installed Photoshop build.
+Smart Object replacement and Color Overlay use Action Manager only where the Photoshop DOM lacks the required operation. Text updates use the DOM only after read-only style-range preflight. Preview and rename workflows use disposable document duplicates and the DOM. These behaviors require manual runtime verification against the installed Photoshop build.
 
 Do not add generic code execution, raw batch operations, arbitrary paths, a generic filesystem interface, or shell/process access.

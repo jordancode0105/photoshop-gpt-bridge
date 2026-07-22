@@ -84,6 +84,43 @@ function validTextUpdate(overrides = {}) {
   };
 }
 
+function validDocumentPreview(overrides = {}) {
+  return {
+    documentName: "MatchCard.psd",
+    outputPreviewName: "MatchCard_preview_v1.png",
+    ...overrides,
+  };
+}
+
+function validLayerPreviews(overrides = {}) {
+  return {
+    documentName: "MatchCard.psd",
+    layerIds: [31, 53, 90],
+    mode: "isolated-on-canvas",
+    marginPx: 40,
+    baseOutputName: "candidate_layers_v1",
+    ...overrides,
+  };
+}
+
+function validRename(overrides = {}) {
+  return {
+    documentName: "MatchCard.psd",
+    edits: [{ layerId: 100, newName: "SHOW LOGO - SMART OBJECT" }],
+    outputPsdName: "MatchCard_Renamed_v1.psd",
+    outputPreviewName: "MatchCard_Renamed_v1.png",
+    ...overrides,
+  };
+}
+
+async function getJob(jobId) {
+  const response = await fetch(`${baseUrl}/api/jobs/${jobId}`, {
+    headers: { authorization: `Bearer ${gptToken}` },
+  });
+  assert.equal(response.status, 200);
+  return response.json();
+}
+
 test("creates a confirmed recolorLayers job", async () => {
   const created = await request("/api/jobs/recolor-layers", { body: validRecolor() });
   assert.equal(created.response.status, 202);
@@ -209,6 +246,128 @@ test("accepts spaces, Unicode, tabs, and line breaks in replacement text", async
     body: validTextUpdate({
       edits: [{ layerId: 321, text: "  Café 世界\tline one\r\nline two  " }],
     }),
+  });
+  assert.equal(result.response.status, 202);
+  assert.ok(result.body.jobId);
+});
+
+test("creates a read-only exportDocumentPreview job", async () => {
+  const created = await request("/api/jobs/export-document-preview", {
+    body: validDocumentPreview(),
+  });
+  assert.equal(created.response.status, 202);
+  assert.equal(created.body.status, "pending");
+  const job = await getJob(created.body.jobId);
+  assert.equal(job.type, "exportDocumentPreview");
+  assert.equal(job.requiresConfirmation, false);
+});
+
+test("rejects document preview creation without GPT authentication", async () => {
+  const result = await request("/api/jobs/export-document-preview", {
+    authenticated: false,
+    body: validDocumentPreview(),
+  });
+  assert.equal(result.response.status, 401);
+});
+
+for (const [name, override] of [
+  ["invalid output name", { outputPreviewName: "preview.jpg" }],
+  ["output path traversal", { outputPreviewName: "../preview.png" }],
+  ["unknown property", { unexpected: true }],
+]) {
+  test(`rejects document preview with ${name}`, async () => {
+    const result = await request("/api/jobs/export-document-preview", {
+      body: validDocumentPreview(override),
+    });
+    assert.equal(result.response.status, 400);
+    assert.equal(result.body.error, "Invalid request");
+  });
+}
+
+test("creates a read-only exportLayerPreviews job", async () => {
+  const created = await request("/api/jobs/export-layer-previews", {
+    body: validLayerPreviews(),
+  });
+  assert.equal(created.response.status, 202);
+  assert.equal(created.body.status, "pending");
+  const job = await getJob(created.body.jobId);
+  assert.equal(job.type, "exportLayerPreviews");
+  assert.equal(job.requiresConfirmation, false);
+});
+
+for (const [name, override] of [
+  ["too many layer IDs", { layerIds: Array.from({ length: 13 }, (_value, index) => index + 1) }],
+  ["duplicate layer IDs", { layerIds: [31, 31] }],
+  ["invalid layer ID", { layerIds: [0] }],
+  ["invalid mode", { mode: "whole-document" }],
+  ["invalid negative margin", { marginPx: -1 }],
+  ["invalid excessive margin", { marginPx: 401 }],
+  ["non-integer margin", { marginPx: 1.5 }],
+  ["path traversal in baseOutputName", { baseOutputName: "../candidate" }],
+  ["directory in baseOutputName", { baseOutputName: "folder\\candidate" }],
+  ["unknown property", { unexpected: true }],
+]) {
+  test(`rejects layer previews with ${name}`, async () => {
+    const result = await request("/api/jobs/export-layer-previews", {
+      body: validLayerPreviews(override),
+    });
+    assert.equal(result.response.status, 400);
+    assert.equal(result.body.error, "Invalid request");
+  });
+}
+
+test("creates a confirmed renameLayers job", async () => {
+  const created = await request("/api/jobs/rename-layers", {
+    body: validRename(),
+  });
+  assert.equal(created.response.status, 202);
+  assert.equal(created.body.status, "pending");
+  const job = await getJob(created.body.jobId);
+  assert.equal(job.type, "renameLayers");
+  assert.equal(job.requiresConfirmation, true);
+});
+
+test("rejects rename creation without GPT authentication", async () => {
+  const result = await request("/api/jobs/rename-layers", {
+    authenticated: false,
+    body: validRename(),
+  });
+  assert.equal(result.response.status, 401);
+});
+
+for (const [name, override] of [
+  ["empty edits", { edits: [] }],
+  ["more than 50 edits", { edits: Array.from({ length: 51 }, (_value, index) => ({
+    layerId: index + 1,
+    newName: `Layer ${index + 1}`,
+  })) }],
+  ["duplicate layer IDs", { edits: [
+    { layerId: 7, newName: "First" },
+    { layerId: 7, newName: "Second" },
+  ] }],
+  ["invalid layer ID", { edits: [{ layerId: -1, newName: "Invalid" }] }],
+  ["missing newName", { edits: [{ layerId: 7 }] }],
+  ["empty newName", { edits: [{ layerId: 7, newName: "" }] }],
+  ["newName over 255 characters", { edits: [{ layerId: 7, newName: "x".repeat(256) }] }],
+  ["null byte in newName", { edits: [{ layerId: 7, newName: "before\0after" }] }],
+  ["PSD path traversal", { outputPsdName: "../renamed.psd" }],
+  ["PNG directory path", { outputPreviewName: "folder\\renamed.png" }],
+  ["output matching original", { outputPsdName: "MatchCard.psd" }],
+  ["unknown property", { unexpected: true }],
+  ["unknown edit property", { edits: [{ layerId: 7, newName: "Name", opacity: 50 }] }],
+]) {
+  test(`rejects rename layers with ${name}`, async () => {
+    const result = await request("/api/jobs/rename-layers", {
+      body: validRename(override),
+    });
+    assert.equal(result.response.status, 400);
+    assert.equal(result.body.error, "Invalid request");
+  });
+}
+
+test("rename layer names preserve Unicode and surrounding whitespace", async () => {
+  const result = await request("/api/jobs/rename-layers", {
+    body: validRename({ edits: [{ layerId: 100, newName: "  CAFÉ 世界  " }] }),
   });
   assert.equal(result.response.status, 202);
   assert.ok(result.body.jobId);

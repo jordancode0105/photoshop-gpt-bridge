@@ -192,9 +192,102 @@ function plainTextOutputNameSchema(extension) {
     .refine((value) => !value.startsWith("."), "File name must not be hidden or relative")
     .refine((value) => {
       const baseName = value.slice(0, -(extension.length + 1));
+      return !/[. ]$/.test(baseName);
+    }, "File name stem must not end in a dot or space")
+    .refine((value) => {
+      const baseName = value.slice(0, -(extension.length + 1));
       return !/^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(baseName);
     }, "Reserved device file names are not allowed");
 }
+
+function plainOutputStemSchema() {
+  return z
+    .string()
+    .min(1)
+    .max(200)
+    .refine(
+      (value) => !/[\\/\0-\x1f<>:"|?*]/.test(value),
+      "File name stem contains a path or an invalid character"
+    )
+    .refine((value) => !value.includes(".."), "File name stem must not contain path traversal")
+    .refine((value) => !/^[A-Za-z]:/.test(value), "Drive-qualified file names are not allowed")
+    .refine((value) => !value.startsWith("."), "File name stem must not be hidden or relative")
+    .refine((value) => !/[. ]$/.test(value), "File name stem must not end in a dot or space")
+    .refine(
+      (value) => !/^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(value),
+      "Reserved device file names are not allowed"
+    );
+}
+
+function addDuplicateLayerIdIssues(edits, context, pathName) {
+  const seen = new Set();
+  edits.forEach((edit, index) => {
+    const layerId = typeof edit === "number" ? edit : edit.layerId;
+    if (seen.has(layerId)) {
+      context.addIssue({
+        code: "custom",
+        path: [pathName, index, typeof edit === "number" ? undefined : "layerId"].filter(
+          (part) => part !== undefined
+        ),
+        message: `Duplicate layerId: ${layerId}`,
+      });
+    }
+    seen.add(layerId);
+  });
+}
+
+const exportDocumentPreviewSchema = z
+  .object({
+    documentName: z.string().min(1).max(255).optional(),
+    outputPreviewName: plainTextOutputNameSchema("png"),
+  })
+  .strict();
+
+const exportLayerPreviewsSchema = z
+  .object({
+    documentName: z.string().min(1).max(255).optional(),
+    layerIds: z.array(z.number().int().positive()).min(1).max(12),
+    mode: z.enum(["isolated-transparent", "isolated-on-canvas", "contact-sheet"]),
+    marginPx: z.number().int().min(0).max(400).default(40),
+    baseOutputName: plainOutputStemSchema(),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    addDuplicateLayerIdIssues(value.layerIds, context, "layerIds");
+  });
+
+const renameLayerEditSchema = z
+  .object({
+    layerId: z.number().int().positive(),
+    newName: z
+      .string()
+      .min(1)
+      .max(255)
+      .refine((value) => !value.includes("\0"), "Layer name must not contain null bytes"),
+  })
+  .strict();
+
+const renameLayersSchema = z
+  .object({
+    documentName: z.string().min(1).max(255).optional(),
+    edits: z.array(renameLayerEditSchema).min(1).max(50),
+    outputPsdName: plainTextOutputNameSchema("psd"),
+    outputPreviewName: plainTextOutputNameSchema("png"),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    addDuplicateLayerIdIssues(value.edits, context, "edits");
+    if (
+      value.documentName &&
+      value.outputPsdName.toLowerCase() === value.documentName.toLowerCase()
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["outputPsdName"],
+        message: "Output PSD name must not match the original document",
+      });
+    }
+  });
 
 const updateTextEditSchema = z
   .object({
@@ -313,6 +406,57 @@ app.post("/api/jobs/update-text-layers", requireGptAuth, (req, res) => {
     status: job.status,
     message:
       "Text update queued. Stop and wait for the user to approve it in the local Photoshop agent.",
+  });
+});
+
+app.post("/api/jobs/export-document-preview", requireGptAuth, (req, res) => {
+  const parsed = exportDocumentPreviewSchema.safeParse(req.body || {});
+  if (!parsed.success) {
+    return res.status(400).json({
+      error: "Invalid request",
+      details: parsed.error.flatten(),
+    });
+  }
+
+  const job = createJob("exportDocumentPreview", parsed.data, false);
+  res.status(202).json({
+    jobId: job.id,
+    status: job.status,
+    message: "Read-only document preview queued. Poll the job-status endpoint.",
+  });
+});
+
+app.post("/api/jobs/export-layer-previews", requireGptAuth, (req, res) => {
+  const parsed = exportLayerPreviewsSchema.safeParse(req.body || {});
+  if (!parsed.success) {
+    return res.status(400).json({
+      error: "Invalid request",
+      details: parsed.error.flatten(),
+    });
+  }
+
+  const job = createJob("exportLayerPreviews", parsed.data, false);
+  res.status(202).json({
+    jobId: job.id,
+    status: job.status,
+    message: "Read-only layer preview export queued. Poll the job-status endpoint.",
+  });
+});
+
+app.post("/api/jobs/rename-layers", requireGptAuth, (req, res) => {
+  const parsed = renameLayersSchema.safeParse(req.body || {});
+  if (!parsed.success) {
+    return res.status(400).json({
+      error: "Invalid request",
+      details: parsed.error.flatten(),
+    });
+  }
+
+  const job = createJob("renameLayers", parsed.data, true);
+  res.status(202).json({
+    jobId: job.id,
+    status: job.status,
+    message: "Layer rename queued. Stop and wait for local approval before polling status.",
   });
 });
 

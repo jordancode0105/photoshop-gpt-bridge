@@ -424,6 +424,7 @@
             throw new Error("Expected a " + extension + " output file name.");
         }
         var baseName = lower.substring(0, lower.length - extension.length);
+        if (/[. ]$/.test(baseName)) throw new Error("Output file name stems must not end in a dot or space.");
         if (/^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/.test(baseName)) {
             throw new Error("The output uses a reserved device file name.");
         }
@@ -751,6 +752,427 @@
             throw error;
         }
     }
+    function validatePlainOutputStem(value) {
+        if (typeof value !== "string" || value.length < 1 || value.length > 200) {
+            throw new Error("Expected a plain output file name stem.");
+        }
+        if (/[\\\/\x00-\x1f<>:"|?*]/.test(value) || value.indexOf("..") !== -1 || /^[A-Za-z]:/.test(value) || /^\./.test(value) || /[. ]$/.test(value)) {
+            throw new Error("Output stems must be plain names without paths, traversal, drive letters, or invalid characters.");
+        }
+        if (/^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(value)) {
+            throw new Error("The output stem uses a reserved device file name.");
+        }
+    }
+    function validateLayerIdList(layerIds, maximum) {
+        if (!(layerIds instanceof Array) || layerIds.length < 1 || layerIds.length > maximum) {
+            throw new Error("Layer IDs must contain 1 through " + maximum + " entries.");
+        }
+        var ids = [], seen = {};
+        for (var i = 0; i < layerIds.length; i++) {
+            var layerId = Number(layerIds[i]);
+            if (!isFinite(layerId) || layerId <= 0 || Math.floor(layerId) !== layerId) {
+                throw new Error("Every layer ID must be a positive integer.");
+            }
+            if (seen[String(layerId)]) throw new Error("Duplicate layer ID: " + layerId);
+            seen[String(layerId)] = true;
+            ids.push(layerId);
+        }
+        return ids;
+    }
+    function resolveSourceLayersByIds(document, layerIds) {
+        var ids = validateLayerIdList(layerIds, 12), targets = [];
+        for (var i = 0; i < ids.length; i++) {
+            var matches = [], wantedId = ids[i];
+            findLayerRecursive(document.layers, function (layer) {
+                return safeLayerId(layer) === wantedId;
+            }, [], matches);
+            if (matches.length !== 1) throw new Error("Layer ID " + wantedId + " was not found uniquely.");
+            targets.push({
+                sourceLayerId: wantedId,
+                name: matches[0].layer.name,
+                path: layerPathAtIndexPath(document, matches[0].indexPath),
+                indexPath: matches[0].indexPath
+            });
+        }
+        return targets;
+    }
+    function indexPathIsPrefix(prefix, path) {
+        if (prefix.length > path.length) return false;
+        for (var i = 0; i < prefix.length; i++) if (Number(prefix[i]) !== Number(path[i])) return false;
+        return true;
+    }
+    function clippingContextPaths(document, targetPath) {
+        var paths = [targetPath.slice(0)], collection = document.layers;
+        for (var i = 0; i < targetPath.length - 1; i++) collection = collection[Number(targetPath[i])].layers;
+        var targetIndex = Number(targetPath[targetPath.length - 1]);
+        var target = collection[targetIndex], grouped = false;
+        try { grouped = target.typename === "ArtLayer" && Boolean(target.grouped); } catch (_groupedError) {}
+        if (grouped) {
+            for (var j = targetIndex + 1; j < collection.length; j++) {
+                var contextPath = targetPath.slice(0, targetPath.length - 1); contextPath.push(j);
+                paths.push(contextPath);
+                var stillGrouped = false;
+                try { stillGrouped = collection[j].typename === "ArtLayer" && Boolean(collection[j].grouped); } catch (_contextGroupedError) {}
+                if (!stillGrouped) break;
+            }
+        }
+        return paths;
+    }
+    function isolateVisibleLayers(layers, parentPath, keepPaths) {
+        for (var i = 0; i < layers.length; i++) {
+            var layer = layers[i], currentPath = parentPath.slice(0); currentPath.push(i);
+            var ancestorOrTarget = false, descendantOfKeptGroup = false;
+            for (var j = 0; j < keepPaths.length; j++) {
+                if (indexPathIsPrefix(currentPath, keepPaths[j])) ancestorOrTarget = true;
+                if (indexPathIsPrefix(keepPaths[j], currentPath)) descendantOfKeptGroup = true;
+            }
+            if (ancestorOrTarget) layer.visible = true;
+            else if (!descendantOfKeptGroup) layer.visible = false;
+            if (layer.typename === "LayerSet" && (ancestorOrTarget || descendantOfKeptGroup)) {
+                isolateVisibleLayers(layer.layers, currentPath, keepPaths);
+            }
+        }
+    }
+    function duplicateIsolatedDocument(sourceDocument, target, duplicateName) {
+        var duplicate = null;
+        try {
+            duplicate = sourceDocument.duplicate(duplicateName, false);
+            app.activeDocument = duplicate;
+            var duplicateTarget = getLayerByIndexPath(duplicate, target.indexPath);
+            var keepPaths = clippingContextPaths(duplicate, target.indexPath);
+            isolateVisibleLayers(duplicate.layers, [], keepPaths);
+            duplicate.activeLayer = duplicateTarget;
+            return duplicate;
+        } catch (error) {
+            if (duplicate) {
+                try { duplicate.close(SaveOptions.DONOTSAVECHANGES); } catch (_duplicateCloseError) {}
+            }
+            try { app.activeDocument = sourceDocument; } catch (_activateSourceError) {}
+            throw error;
+        }
+    }
+    function trimWithMargin(document, marginPx) {
+        try {
+            document.trim(TrimType.TRANSPARENT, true, true, true, true);
+        } catch (error) {
+            throw new Error("The isolated layer has no trimmable visible pixels: " + error.message);
+        }
+        if (marginPx > 0) {
+            var width = toPixels(document.width), height = toPixels(document.height);
+            document.resizeCanvas(
+                UnitValue(width + (marginPx * 2), "px"),
+                UnitValue(height + (marginPx * 2), "px"),
+                AnchorPosition.MIDDLECENTER
+            );
+        }
+    }
+    function savePng(document, outputFile) {
+        try {
+            if (document.mode !== DocumentMode.RGB) document.changeMode(ChangeMode.RGB);
+        } catch (error) {
+            throw new Error("The temporary document could not be converted to RGB for PNG export: " + error.message);
+        }
+        var pngOptions = new PNGSaveOptions();
+        pngOptions.interlaced = false;
+        document.saveAs(outputFile, pngOptions, true, Extension.LOWERCASE);
+    }
+    function assertNoExistingOutputs(files) {
+        for (var i = 0; i < files.length; i++) {
+            if (files[i].exists) throw new Error("An output file already exists: " + files[i].name);
+        }
+    }
+    function cleanupAttemptedOutputs(files, failures) {
+        for (var i = files.length - 1; i >= 0; i--) removeJobOutput(files[i], "Partial output " + files[i].name, failures);
+    }
+    function exportDocumentPreview(input) {
+        var payload = input.payload || {};
+        validatePlainTextOutputFileName(payload.outputPreviewName, ".png");
+        var sourceDocument = getDocument(payload.documentName);
+        app.activeDocument = sourceDocument;
+        var workingFolder = new Folder(input.workingFolder);
+        if (!workingFolder.exists) throw new Error("Working folder does not exist: " + input.workingFolder);
+        var outputPreview = childFile(workingFolder, payload.outputPreviewName);
+        assertNoExistingOutputs([outputPreview]);
+
+        var previewDocument = null, outputAttempted = false;
+        try {
+            previewDocument = sourceDocument.duplicate(payload.outputPreviewName.replace(/\.png$/i, "_preview"), true);
+            app.activeDocument = previewDocument;
+            previewDocument.flatten();
+            if (outputPreview.exists) throw new Error("The preview output appeared while the job was running.");
+            outputAttempted = true;
+            savePng(previewDocument, outputPreview);
+            previewDocument.close(SaveOptions.DONOTSAVECHANGES);
+            previewDocument = null;
+            app.activeDocument = sourceDocument;
+            return {
+                documentName: sourceDocument.name,
+                outputPreviewPath: outputPreview.fsName,
+                originalPreserved: true
+            };
+        } catch (error) {
+            if (previewDocument) {
+                try { previewDocument.close(SaveOptions.DONOTSAVECHANGES); } catch (_previewCloseError) {}
+            }
+            try { app.activeDocument = sourceDocument; } catch (_activateSourceError) {}
+            var cleanupFailures = [];
+            if (outputAttempted) removeJobOutput(outputPreview, "Partial PNG output", cleanupFailures);
+            if (cleanupFailures.length) throw new Error(error.message + " Cleanup error: " + cleanupFailures.join("; ") + ".");
+            throw error;
+        }
+    }
+    function truncateLabel(value, maximum) {
+        var text = String(value);
+        return text.length <= maximum ? text : text.substring(0, maximum - 1) + "…";
+    }
+    function addContactSheetLabel(sheet, target, left, baseline) {
+        var label = sheet.artLayers.add();
+        label.kind = LayerKind.TEXT;
+        label.name = "Label " + target.sourceLayerId;
+        label.textItem.contents = "ID " + target.sourceLayerId + " | " + truncateLabel(target.name, 45) + "\r" + truncateLabel(target.path, 75);
+        label.textItem.position = [UnitValue(left, "px"), UnitValue(baseline, "px")];
+        label.textItem.size = UnitValue(12, "pt");
+        var black = new SolidColor(); black.rgb.red = 0; black.rgb.green = 0; black.rgb.blue = 0;
+        label.textItem.color = black;
+    }
+    function placeIsolatedPreviewOnSheet(sourceDocument, target, sheet, tileLeft, tileTop, marginPx, duplicateName) {
+        var isolated = null;
+        try {
+            isolated = duplicateIsolatedDocument(sourceDocument, target, duplicateName);
+            trimWithMargin(isolated, 0);
+            var width = toPixels(isolated.width), height = toPixels(isolated.height);
+            var maxWidth = 480, maxHeight = 340;
+            var scale = Math.min(1, maxWidth / width, maxHeight / height);
+            if (scale < 1) {
+                isolated.resizeImage(
+                    UnitValue(Math.max(1, Math.round(width * scale)), "px"),
+                    UnitValue(Math.max(1, Math.round(height * scale)), "px"),
+                    isolated.resolution,
+                    ResampleMethod.BICUBICSHARPER
+                );
+            }
+            isolated.selection.selectAll();
+            isolated.selection.copy(true);
+            isolated.selection.deselect();
+            app.activeDocument = sheet;
+            sheet.paste();
+            var pasted = sheet.activeLayer, bounds = safeBounds(pasted);
+            if (!bounds) throw new Error("Could not determine the pasted preview bounds.");
+            var tileWidth = 480 + (marginPx * 2), contentHeight = 340 + (marginPx * 2);
+            var desiredCenterX = tileLeft + (tileWidth / 2), desiredCenterY = tileTop + (contentHeight / 2);
+            pasted.translate(UnitValue(desiredCenterX - ((bounds.left + bounds.right) / 2), "px"), UnitValue(desiredCenterY - ((bounds.top + bounds.bottom) / 2), "px"));
+            pasted.name = "Layer " + target.sourceLayerId + " - " + target.name;
+            isolated.close(SaveOptions.DONOTSAVECHANGES);
+            isolated = null;
+        } catch (error) {
+            if (isolated) {
+                try { isolated.close(SaveOptions.DONOTSAVECHANGES); } catch (_isolatedCloseError) {}
+            }
+            throw error;
+        }
+    }
+    function exportContactSheet(sourceDocument, targets, outputFile, marginPx, baseOutputName) {
+        var columns = Math.min(3, targets.length), rows = Math.ceil(targets.length / columns);
+        var tileWidth = 480 + (marginPx * 2), tileHeight = 410 + (marginPx * 2);
+        var sheet = app.documents.add(
+            UnitValue(tileWidth * columns, "px"),
+            UnitValue(tileHeight * rows, "px"),
+            72,
+            baseOutputName + "_contact_sheet",
+            NewDocumentMode.RGB,
+            DocumentFill.TRANSPARENT
+        );
+        try {
+            for (var i = 0; i < targets.length; i++) {
+                var column = i % columns, row = Math.floor(i / columns);
+                var left = column * tileWidth, top = row * tileHeight;
+                placeIsolatedPreviewOnSheet(sourceDocument, targets[i], sheet, left, top, marginPx, baseOutputName + "_contact_" + targets[i].sourceLayerId);
+                app.activeDocument = sheet;
+                addContactSheetLabel(sheet, targets[i], left + marginPx + 8, top + (marginPx * 2) + 370);
+            }
+            if (outputFile.exists) throw new Error("The contact-sheet output appeared while the job was running.");
+            savePng(sheet, outputFile);
+            sheet.close(SaveOptions.DONOTSAVECHANGES);
+            return null;
+        } catch (error) {
+            try { sheet.close(SaveOptions.DONOTSAVECHANGES); } catch (_sheetCloseError) {}
+            throw error;
+        }
+    }
+    function exportLayerPreviews(input) {
+        var payload = input.payload || {};
+        validatePlainOutputStem(payload.baseOutputName);
+        var mode = String(payload.mode || "");
+        if (mode !== "isolated-transparent" && mode !== "isolated-on-canvas" && mode !== "contact-sheet") {
+            throw new Error("Unsupported layer preview mode: " + mode);
+        }
+        var marginPx = typeof payload.marginPx === "undefined" ? 40 : Number(payload.marginPx);
+        if (!isFinite(marginPx) || marginPx < 0 || marginPx > 400 || Math.floor(marginPx) !== marginPx) {
+            throw new Error("Layer preview marginPx must be an integer from 0 through 400.");
+        }
+        var sourceDocument = getDocument(payload.documentName);
+        app.activeDocument = sourceDocument;
+        var targets = resolveSourceLayersByIds(sourceDocument, payload.layerIds);
+        var workingFolder = new Folder(input.workingFolder);
+        if (!workingFolder.exists) throw new Error("Working folder does not exist: " + input.workingFolder);
+
+        var outputFiles = [], i;
+        if (mode === "contact-sheet") {
+            outputFiles.push(childFile(workingFolder, payload.baseOutputName + "_contact_sheet.png"));
+        } else {
+            for (i = 0; i < targets.length; i++) outputFiles.push(childFile(workingFolder, payload.baseOutputName + "_layer_" + targets[i].sourceLayerId + ".png"));
+        }
+        assertNoExistingOutputs(outputFiles);
+
+        var temporaryDocument = null, attemptedOutputs = [], previews = [];
+        try {
+            if (mode === "contact-sheet") {
+                attemptedOutputs.push(outputFiles[0]);
+                exportContactSheet(sourceDocument, targets, outputFiles[0], marginPx, payload.baseOutputName);
+                for (i = 0; i < targets.length; i++) {
+                    previews.push({
+                        sourceLayerId: targets[i].sourceLayerId,
+                        name: targets[i].name,
+                        path: targets[i].path,
+                        outputPreviewPath: outputFiles[0].fsName
+                    });
+                }
+            } else {
+                for (i = 0; i < targets.length; i++) {
+                    temporaryDocument = duplicateIsolatedDocument(sourceDocument, targets[i], payload.baseOutputName + "_layer_" + targets[i].sourceLayerId);
+                    if (mode === "isolated-transparent") trimWithMargin(temporaryDocument, marginPx);
+                    if (outputFiles[i].exists) throw new Error("An output file appeared while the job was running: " + outputFiles[i].name);
+                    attemptedOutputs.push(outputFiles[i]);
+                    savePng(temporaryDocument, outputFiles[i]);
+                    temporaryDocument.close(SaveOptions.DONOTSAVECHANGES);
+                    temporaryDocument = null;
+                    previews.push({
+                        sourceLayerId: targets[i].sourceLayerId,
+                        name: targets[i].name,
+                        path: targets[i].path,
+                        outputPreviewPath: outputFiles[i].fsName
+                    });
+                }
+            }
+            app.activeDocument = sourceDocument;
+            return {
+                originalDocument: sourceDocument.name,
+                mode: mode,
+                previews: previews,
+                contactSheetPath: mode === "contact-sheet" ? outputFiles[0].fsName : null,
+                originalPreserved: true
+            };
+        } catch (error) {
+            if (temporaryDocument) {
+                try { temporaryDocument.close(SaveOptions.DONOTSAVECHANGES); } catch (_temporaryCloseError) {}
+            }
+            try { app.activeDocument = sourceDocument; } catch (_activateSourceError) {}
+            var cleanupFailures = [];
+            cleanupAttemptedOutputs(attemptedOutputs, cleanupFailures);
+            if (cleanupFailures.length) throw new Error(error.message + " Cleanup error: " + cleanupFailures.join("; ") + ".");
+            throw error;
+        }
+    }
+    function validateRenameEdit(edit, seenIds) {
+        if (!edit || typeof edit.newName !== "string") throw new Error("Every rename edit requires a string newName.");
+        var layerId = Number(edit.layerId);
+        if (!isFinite(layerId) || layerId <= 0 || Math.floor(layerId) !== layerId) throw new Error("Every rename layerId must be a positive integer.");
+        if (seenIds[String(layerId)]) throw new Error("Duplicate rename layerId: " + layerId);
+        seenIds[String(layerId)] = true;
+        if (edit.newName.length < 1 || edit.newName.length > 255) throw new Error("Every new layer name must contain 1 through 255 characters.");
+        if (edit.newName.indexOf("\u0000") !== -1) throw new Error("Layer names must not contain null bytes.");
+        return { layerId: layerId, newName: edit.newName };
+    }
+    function resolveSourceRenameTargets(document, edits) {
+        if (!(edits instanceof Array) || edits.length < 1 || edits.length > 50) throw new Error("Rename edits must contain 1 through 50 entries.");
+        var targets = [], seenIds = {};
+        for (var i = 0; i < edits.length; i++) {
+            var edit = validateRenameEdit(edits[i], seenIds), matches = [];
+            findLayerRecursive(document.layers, function (layer) { return safeLayerId(layer) === edit.layerId; }, [], matches);
+            if (matches.length !== 1) throw new Error("Rename layer ID " + edit.layerId + " was not found uniquely.");
+            targets.push({
+                edit: edit,
+                indexPath: matches[0].indexPath,
+                oldName: matches[0].layer.name,
+                path: layerPathAtIndexPath(document, matches[0].indexPath)
+            });
+        }
+        return targets;
+    }
+    function renameLayers(input) {
+        var payload = input.payload || {};
+        validatePlainTextOutputFileName(payload.outputPsdName, ".psd");
+        validatePlainTextOutputFileName(payload.outputPreviewName, ".png");
+        var sourceDocument = getDocument(payload.documentName);
+        app.activeDocument = sourceDocument;
+        if (String(payload.outputPsdName).toLowerCase() === sourceDocument.name.toLowerCase()) throw new Error("The output PSD name must not match the original document.");
+        var targets = resolveSourceRenameTargets(sourceDocument, payload.edits);
+        var workingFolder = new Folder(input.workingFolder);
+        if (!workingFolder.exists) throw new Error("Working folder does not exist: " + input.workingFolder);
+        var outputPsd = childFile(workingFolder, payload.outputPsdName), outputPreview = childFile(workingFolder, payload.outputPreviewName);
+        assertNoExistingOutputs([outputPsd, outputPreview]);
+
+        var workingDocument = null, previewDocument = null, outputPhaseStarted = false;
+        try {
+            workingDocument = sourceDocument.duplicate(payload.outputPsdName.replace(/\.psd$/i, ""), false);
+            app.activeDocument = workingDocument;
+            var duplicateTargets = [], i;
+            for (i = 0; i < targets.length; i++) {
+                var duplicateLayer = getLayerByIndexPath(workingDocument, targets[i].indexPath);
+                if (duplicateLayer.name !== targets[i].oldName) throw new Error('Duplicated target "' + targets[i].path + '" no longer matches the source name.');
+                duplicateTargets.push({ layer: duplicateLayer, source: targets[i] });
+            }
+            var renamed = [];
+            for (i = 0; i < duplicateTargets.length; i++) {
+                var target = duplicateTargets[i];
+                target.layer.name = target.source.edit.newName;
+                if (target.layer.name !== target.source.edit.newName) throw new Error('Photoshop did not retain the requested name for "' + target.source.path + '" exactly.');
+                renamed.push({
+                    sourceLayerId: target.source.edit.layerId,
+                    outputLayerId: safeLayerId(target.layer),
+                    oldName: target.source.oldName,
+                    newName: target.layer.name,
+                    path: target.source.path
+                });
+            }
+            if (outputPsd.exists || outputPreview.exists) throw new Error("An output file appeared while the job was running. No output was saved.");
+            outputPhaseStarted = true;
+            var psdOptions = new PhotoshopSaveOptions();
+            psdOptions.layers = true; psdOptions.embedColorProfile = true; psdOptions.alphaChannels = true; psdOptions.annotations = true; psdOptions.spotColors = true;
+            workingDocument.saveAs(outputPsd, psdOptions, false, Extension.LOWERCASE);
+            previewDocument = workingDocument.duplicate(payload.outputPsdName.replace(/\.psd$/i, "_preview"), true);
+            app.activeDocument = previewDocument;
+            previewDocument.flatten();
+            if (outputPreview.exists) throw new Error("The preview output appeared while the job was running.");
+            savePng(previewDocument, outputPreview);
+            previewDocument.close(SaveOptions.DONOTSAVECHANGES);
+            previewDocument = null;
+            app.activeDocument = workingDocument;
+            return {
+                originalDocument: sourceDocument.name,
+                outputDocumentOpen: workingDocument.name,
+                renamedLayers: renamed,
+                outputPsdPath: outputPsd.fsName,
+                outputPreviewPath: outputPreview.fsName,
+                originalPreserved: true
+            };
+        } catch (error) {
+            if (previewDocument) {
+                try { previewDocument.close(SaveOptions.DONOTSAVECHANGES); } catch (_previewCloseError) {}
+            }
+            if (workingDocument) {
+                try { workingDocument.close(SaveOptions.DONOTSAVECHANGES); } catch (_workingCloseError) {}
+            }
+            try { app.activeDocument = sourceDocument; } catch (_activateSourceError) {}
+            var cleanupFailures = [];
+            if (outputPhaseStarted) {
+                removeJobOutput(outputPreview, "Partial PNG output", cleanupFailures);
+                removeJobOutput(outputPsd, "Partial PSD output", cleanupFailures);
+            }
+            if (cleanupFailures.length) throw new Error(error.message + " Cleanup error: " + cleanupFailures.join("; ") + ".");
+            throw error;
+        }
+    }
     function execute(input) {
     if (input.type === "inspectDocument") {
         return inspectDocument(input.payload || {});
@@ -763,6 +1185,15 @@
     }
     if (input.type === "updateTextLayers") {
         return updateTextLayers(input);
+    }
+    if (input.type === "exportDocumentPreview") {
+        return exportDocumentPreview(input);
+    }
+    if (input.type === "exportLayerPreviews") {
+        return exportLayerPreviews(input);
+    }
+    if (input.type === "renameLayers") {
+        return renameLayers(input);
     }
     throw new Error("Unsupported operation: " + input.type);
 }

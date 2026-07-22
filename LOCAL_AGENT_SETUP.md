@@ -21,6 +21,66 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\local-agent\agent.ps1
 
 The console should report the Photoshop version, relay URL, working folder, and polling interval.
 
+## Preview workflow
+
+Document and layer preview jobs are read-only, so the agent executes them without asking for `YES`. PNGs are exported into `WORKING_FOLDER`; the GPT can report their local paths but cannot see the pixels until you upload the files into the chat.
+
+Export a flattened document preview:
+
+```powershell
+$headers = @{ Authorization = "Bearer YOUR_GPT_ACTION_API_KEY" }
+$body = @{
+    documentName = "RWCMatchCard.psd"
+    outputPreviewName = "RWCMatchCard_preview_v1.png"
+} | ConvertTo-Json
+$job = Invoke-RestMethod -Method Post -Uri "https://photoshop-gpt-bridge.onrender.com/api/jobs/export-document-preview" -Headers $headers -ContentType "application/json" -Body $body
+```
+
+After a fresh inspection, export candidate layers:
+
+```powershell
+$body = @{
+    documentName = "RWCMatchCard.psd"
+    layerIds = @(31, 53, 90)
+    mode = "contact-sheet"
+    marginPx = 40
+    baseOutputName = "candidate_layers_v1"
+} | ConvertTo-Json
+$job = Invoke-RestMethod -Method Post -Uri "https://photoshop-gpt-bridge.onrender.com/api/jobs/export-layer-previews" -Headers $headers -ContentType "application/json" -Body $body
+```
+
+Use `isolated-transparent` for a cropped transparent asset, `isolated-on-canvas` to retain placement on the source canvas, or `contact-sheet` for one labeled comparison image. Names are deterministic and never overwritten, so increment the version in `outputPreviewName` or `baseOutputName` for every retry. Check the job and upload its PNG output into the GPT chat for visual reasoning:
+
+```powershell
+Invoke-RestMethod -Method Get -Uri "https://photoshop-gpt-bridge.onrender.com/api/jobs/$($job.jobId)" -Headers $headers
+```
+
+## Layer-renaming workflow
+
+1. Inspect the document immediately before planning names.
+2. If identities are ambiguous, export candidate previews and upload them to the GPT chat.
+3. Review a list of each exact ID, full path, old name, and proposed new name.
+4. Queue `POST /api/jobs/rename-layers` with fresh versioned PSD and PNG names.
+5. Review the complete payload in the local-agent window and type uppercase `YES` exactly.
+6. After local approval, poll the job status and review the new layered PSD left open plus its PNG preview.
+
+Example:
+
+```powershell
+$headers = @{ Authorization = "Bearer YOUR_GPT_ACTION_API_KEY" }
+$body = @{
+    documentName = "RWCMatchCard.psd"
+    edits = @(
+        @{ layerId = 100; newName = "SHOW LOGO - SMART OBJECT" }
+    )
+    outputPsdName = "RWCMatchCard_Renamed_v1.psd"
+    outputPreviewName = "RWCMatchCard_Renamed_v1.png"
+} | ConvertTo-Json -Depth 5
+$job = Invoke-RestMethod -Method Post -Uri "https://photoshop-gpt-bridge.onrender.com/api/jobs/rename-layers" -Headers $headers -ContentType "application/json" -Body $body
+```
+
+Role-based names such as `LOWER THIRD LIGHT STRIP`, `FULL FRAME ATMOSPHERE`, and `MAIN EVENT TITLE` improve later inspection and exact-ID workflows. The source remains untouched; the operation renames only a duplicate and fails transactionally on stale IDs or output conflicts.
+
 ## Recolor workflow
 
 1. Queue and complete `POST /api/jobs/inspect-document` immediately before recoloring.
@@ -99,6 +159,9 @@ Content replacement does not resize or fit text. Longer content can overflow a p
 
 - **No job appears:** verify the relay URL, device token, and `/health`, then confirm the relay process was not restarted (jobs are in memory).
 - **Layer ID is missing or ambiguous:** the document changed after inspection. Inspect again and use the new ID.
+- **Layer identity is visually ambiguous:** export `isolated-on-canvas` previews or a `contact-sheet`, wait for completion, and upload the PNG to the GPT chat before selecting a write target.
+- **Preview is blank:** the layer may be empty, fully transparent, hidden by Photoshop-specific clipping/blending behavior, or dependent on unsupported context. Try `isolated-on-canvas`; otherwise inspect the PSD manually.
+- **Contact-sheet labels are clipped or use fallback glyphs:** shorten unusually long names/paths or rename layers manually; font availability and text rendering vary by Photoshop installation.
 - **Layer does not support the effect:** start with a conventional visible layer. Some special Photoshop layer states reject Color Overlay effects.
 - **Existing effects cannot be preserved:** layers with multiple Color Overlay instances are rejected explicitly. Other effects are merged and preserved; if Photoshop cannot safely read or write the descriptor, the job fails without saving the duplicate.
 - **Output exists:** use the next version number for both output filenames. The agent never overwrites an existing PSD or PNG.
@@ -106,4 +169,4 @@ Content replacement does not resize or fit text. Longer content can overflow a p
 - **Text layer is unsupported:** inspect `textInfo.unsupportedReason`. Mixed or unreadable style ranges must be simplified manually before using content-only replacement.
 - **Text overflows:** shorten the replacement or resize/reformat manually in Photoshop; this operation never changes font size, bounds, transform, or paragraph settings.
 
-Photoshop runtime behavior must be verified manually against the installed version. Color Overlay uses Action Manager, while text updates combine read-only Action Manager style-range inspection with DOM content replacement.
+Photoshop runtime behavior must be verified manually against the installed version. Color Overlay uses Action Manager, text updates combine read-only Action Manager style-range inspection with DOM content replacement, and preview/contact-sheet rendering depends on the installed Photoshop DOM, color modes, fonts, clipping groups, and layer effects.

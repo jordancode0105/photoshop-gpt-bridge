@@ -1,11 +1,11 @@
 openapi: 3.1.0
 info:
   title: Private Photoshop Bridge
-  version: 0.1.0
+  version: 0.2.0
   description: >
-    Queues narrowly scoped Photoshop jobs for a local agent. Inspection is
-    read-only. Smart Object replacement, layer recoloring, and text updates
-    require local approval and always save a new PSD copy.
+    Queues narrowly scoped Photoshop jobs for a local agent. Inspection and
+    preview export are read-only. Smart Object replacement, layer recoloring,
+    text updates, and layer renaming require local approval and save a new PSD copy.
 servers:
   - url: https://photoshop-gpt-bridge.onrender.com
 security:
@@ -266,6 +266,183 @@ paths:
       responses:
         "202":
           description: Text update queued; stop and wait for local approval
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QueuedJob"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+
+  /api/jobs/export-document-preview:
+    post:
+      operationId: exportPhotoshopDocumentPreview
+      summary: Export a local PNG preview of an open Photoshop document
+      description: >
+        Read-only. Export a flattened PNG locally for review or upload, then
+        check getPhotoshopJobStatus. The source stays unchanged; use an exact
+        open document name or omit it for the active document.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [outputPreviewName]
+              properties:
+                documentName:
+                  type: string
+                  minLength: 1
+                  maxLength: 255
+                  description: Optional exact open document name. Omit to use the active document.
+                outputPreviewName:
+                  type: string
+                  minLength: 5
+                  maxLength: 255
+                  pattern: '^(?!\.)(?!.*\.\.)(?![A-Za-z]:)[^\\/\x00-\x1F<>:"|?*]+\.png$'
+                  description: Plain versioned PNG name in the local working folder; existing files are never overwritten.
+            example:
+              documentName: RWCMatchCard.psd
+              outputPreviewName: RWCMatchCard_preview_v1.png
+      responses:
+        "202":
+          description: Read-only document preview queued
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QueuedJob"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+
+  /api/jobs/export-layer-previews:
+    post:
+      operationId: exportPhotoshopLayerPreviews
+      summary: Export local PNG previews for exact Photoshop layer IDs
+      description: >
+        Read-only. Use exact IDs from a fresh inspection to export isolated PNGs
+        or one contact sheet locally for review or upload. Check
+        getPhotoshopJobStatus for paths; the source stays unchanged.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [layerIds, mode, baseOutputName]
+              properties:
+                documentName:
+                  type: string
+                  minLength: 1
+                  maxLength: 255
+                  description: Optional exact open document name. Omit to use the active document.
+                layerIds:
+                  type: array
+                  minItems: 1
+                  maxItems: 12
+                  uniqueItems: true
+                  description: Unique exact numeric layer IDs from a fresh inspection.
+                  items:
+                    type: integer
+                    minimum: 1
+                mode:
+                  type: string
+                  enum: [isolated-transparent, isolated-on-canvas, contact-sheet]
+                marginPx:
+                  type: integer
+                  minimum: 0
+                  maximum: 400
+                  default: 40
+                baseOutputName:
+                  type: string
+                  minLength: 1
+                  maxLength: 200
+                  pattern: '^(?!\.)(?!.*\.\.)(?![A-Za-z]:)[^\\/\x00-\x1F<>:"|?*]+$'
+                  description: Plain versioned filename stem; deterministic PNG names are created locally.
+            example:
+              documentName: RWCMatchCard.psd
+              layerIds: [31, 53, 90]
+              mode: isolated-on-canvas
+              marginPx: 40
+              baseOutputName: candidate_layers_v1
+      responses:
+        "202":
+          description: Read-only layer previews queued
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QueuedJob"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+
+  /api/jobs/rename-layers:
+    post:
+      operationId: renamePhotoshopLayers
+      summary: Rename exact Photoshop layers in a new PSD copy
+      description: >
+        Write operation. Present old and proposed names first, use exact IDs from
+        a fresh inspection, then queue and wait for local approval. Check
+        getPhotoshopJobStatus afterward; PSD and preview files are saved locally.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [edits, outputPsdName, outputPreviewName]
+              properties:
+                documentName:
+                  type: string
+                  minLength: 1
+                  maxLength: 255
+                  description: Optional exact open document name. Omit to use the active document.
+                edits:
+                  type: array
+                  minItems: 1
+                  maxItems: 50
+                  description: Rename proposals with unique exact layer IDs from a fresh inspection.
+                  items:
+                    type: object
+                    additionalProperties: false
+                    required: [layerId, newName]
+                    properties:
+                      layerId:
+                        type: integer
+                        minimum: 1
+                      newName:
+                        type: string
+                        minLength: 1
+                        maxLength: 255
+                        description: Exact new Unicode name; null bytes are rejected.
+                outputPsdName:
+                  type: string
+                  minLength: 5
+                  maxLength: 255
+                  pattern: '^(?!\.)(?!.*\.\.)(?![A-Za-z]:)[^\\/\x00-\x1F<>:"|?*]+\.psd$'
+                  description: Plain versioned PSD name distinct from the original; existing files are never overwritten.
+                outputPreviewName:
+                  type: string
+                  minLength: 5
+                  maxLength: 255
+                  pattern: '^(?!\.)(?!.*\.\.)(?![A-Za-z]:)[^\\/\x00-\x1F<>:"|?*]+\.png$'
+                  description: Plain versioned PNG name in the local working folder; existing files are never overwritten.
+            example:
+              documentName: RWCMatchCard.psd
+              edits:
+                - layerId: 100
+                  newName: SHOW LOGO - SMART OBJECT
+              outputPsdName: RWCMatchCard_Renamed_v1.psd
+              outputPreviewName: RWCMatchCard_Renamed_v1.png
+      responses:
+        "202":
+          description: Rename operation queued for local approval
           content:
             application/json:
               schema:
