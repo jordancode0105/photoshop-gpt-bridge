@@ -104,12 +104,9 @@ paths:
       operationId: recolorPhotoshopLayers
       summary: Apply safe Color Overlay effects and save new PSD and PNG files
       description: >
-        Queue a consequential write operation. Exact layer IDs should come from
-        a fresh inspectPhotoshopDocument result because IDs and layer structure
-        can become stale. The user must approve the job in the local agent. The
-        original document is preserved; edits are applied only to a duplicate.
-        After receiving the jobId, poll getPhotoshopJobStatus until the job
-        succeeds or fails.
+        Recolor Photoshop layers using exact IDs from a fresh inspection.
+        This write operation preserves the original, requires local approval,
+        saves a new layered PSD and PNG preview, and requires job-status polling.
       requestBody:
         required: true
         content:
