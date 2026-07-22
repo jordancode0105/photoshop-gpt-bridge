@@ -1,10 +1,11 @@
 # Private Custom GPT to Photoshop Bridge
 
-This project exposes three narrowly scoped Photoshop operations:
+This project exposes four narrowly scoped Photoshop operations:
 
 1. Inspect an active or exactly named open document and return its complete layer tree.
 2. Replace one ID- or name-addressed Smart Object, then save a new layered PSD and PNG preview.
 3. Apply allowlisted Color Overlay recolors to 1 through 25 exact layer IDs, then save a new layered PSD and flattened PNG preview.
+4. Replace content in 1 through 25 uniformly styled text layers, then save a new layered PSD and flattened PNG preview.
 
 The relay does not call the OpenAI API. A private Custom GPT calls the relay through a GPT Action. A local PowerShell agent polls the relay and invokes a fixed ExtendScript worker through Photoshop COM automation.
 
@@ -28,8 +29,8 @@ Fixed ExtendScript worker -> open PSD + configured working folder
 
 - There are no arbitrary JavaScript, Action Manager descriptor, shell, process, path, or filesystem endpoints.
 - GPT and the local agent use separate secrets.
-- Request schemas reject malformed and unknown recolor fields.
-- Inspection is read-only. Every replacement or recolor job requires the user to type exact `YES` locally.
+- Request schemas reject malformed and unknown recolor or text-update fields.
+- Inspection is read-only. Every replacement, recolor, or text-update job requires the user to type exact `YES` locally.
 - Write operations duplicate the document and never intentionally modify or save over the original.
 - Output names must be plain filenames. The local worker refuses to overwrite an existing PSD or PNG.
 - Jobs expire from the relay. Jobs are held in memory, so a relay restart clears them.
@@ -125,9 +126,59 @@ The worker resolves every requested source ID and stable index path before editi
 - **Output already exists:** increment both versioned filenames, for example from `_v1` to `_v2`. Existing output files are never overwritten.
 - **Approval rejected:** queue a new job and type uppercase `YES` exactly after reviewing it.
 
+## Update one text layer safely
+
+Inspect the open document **immediately before planning the edit**. Text layers include a `textInfo` object without exposing Photoshop descriptors. Optional values are null when they cannot be read safely. A typical uniformly styled layer looks like:
+
+```json
+{
+  "contents": "OLD TEXT",
+  "textType": "TextType.POINTTEXT",
+  "justification": "Justification.CENTER",
+  "font": { "postScriptName": "Arial-BoldMT" },
+  "size": { "value": 24, "unit": "pt" },
+  "color": { "red": 255, "green": 255, "blue": 255 },
+  "hasMultipleTextStyleRanges": false,
+  "hasMultipleParagraphStyleRanges": false,
+  "safeForContentOnlyReplacement": true,
+  "unsupportedReason": null
+}
+```
+
+Start with one test layer. Use only a fresh numeric layer ID whose `safeForContentOnlyReplacement` value is `true`. The worker rejects mixed character or paragraph style ranges rather than flattening their formatting.
+
+```powershell
+$headers = @{ Authorization = "Bearer YOUR_GPT_ACTION_API_KEY" }
+$body = @{
+    documentName = "RWCMatchCard.psd"
+    edits = @(
+        @{
+            layerId = 123
+            text = "NEW TEXT"
+        }
+    )
+    outputPsdName = "RWCMatchCard_Text_v1.psd"
+    outputPreviewName = "RWCMatchCard_Text_v1.png"
+} | ConvertTo-Json -Depth 6
+$job = Invoke-RestMethod -Method Post -Uri "https://photoshop-gpt-bridge.onrender.com/api/jobs/update-text-layers" -Headers $headers -ContentType "application/json" -Body $body
+$job
+```
+
+The relay returns HTTP 202. Stop and review the complete request in the local-agent window, then type exact `YES`. After local approval is complete, poll:
+
+```powershell
+Invoke-RestMethod -Method Get -Uri "https://photoshop-gpt-bridge.onrender.com/api/jobs/$($job.jobId)" -Headers $headers
+```
+
+Success returns the original and open output document names, source/output layer IDs, full paths, previous/new text, and local PSD/PNG paths. Outputs are written to the configured working folder under the versioned names.
+
+Text editing changes content only. It does not resize the type layer, change its bounding box, scale the font, or fit overflowing paragraph text. Review both the flattened PNG and layered PSD. Mixed-style layers, unreadable style ranges, stale IDs, and existing output filenames fail the whole job without leaving job-created output files.
+
+An intentionally empty string is allowed to clear a supported text layer. Tabs, Unicode, spaces, and visible line breaks are retained; line endings are normalized for Photoshop.
+
 ## Optional legacy UXP panel
 
-The `plugin/` directory and packaged `dist/` artifact contain the earlier UXP panel. The PowerShell/COM/ExtendScript agent is the current path for `recolorLayers`. If the optional panel is used for its existing operations, configure its manifest network origin narrowly and load it with UXP Developer Tool.
+The `plugin/` directory and packaged `dist/` artifact contain the earlier UXP panel. The PowerShell/COM/ExtendScript agent is the current path for `recolorLayers` and `updateTextLayers`. If the optional panel is used for its existing operations, configure its manifest network origin narrowly and load it with UXP Developer Tool.
 
 ## Development
 
@@ -138,6 +189,6 @@ Set-Location relay
 npm test
 ```
 
-Smart Object replacement and Color Overlay are implemented with Action Manager only where the Photoshop DOM lacks the required operation. These descriptors are Photoshop-version-sensitive and require manual runtime verification against the installed Photoshop build.
+Smart Object replacement and Color Overlay use Action Manager only where the Photoshop DOM lacks the required operation. Text updates use the DOM only after read-only style-range preflight. These behaviors require manual runtime verification against the installed Photoshop build.
 
 Do not add generic code execution, raw batch operations, arbitrary paths, a generic filesystem interface, or shell/process access.

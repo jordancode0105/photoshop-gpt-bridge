@@ -176,6 +176,77 @@ const recolorSchema = z
     });
   });
 
+function plainTextOutputNameSchema(extension) {
+  const extensionPattern = new RegExp(`\\.${extension}$`, "i");
+  return z
+    .string()
+    .min(extension.length + 2)
+    .max(255)
+    .refine((value) => extensionPattern.test(value), `Expected a plain .${extension} file name`)
+    .refine(
+      (value) => !/[\\/\0-\x1f<>:"|?*]/.test(value),
+      "File name contains a path or an invalid character"
+    )
+    .refine((value) => !value.includes(".."), "File name must not contain path traversal")
+    .refine((value) => !/^[A-Za-z]:/.test(value), "Drive-qualified file names are not allowed")
+    .refine((value) => !value.startsWith("."), "File name must not be hidden or relative")
+    .refine((value) => {
+      const baseName = value.slice(0, -(extension.length + 1));
+      return !/^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(baseName);
+    }, "Reserved device file names are not allowed");
+}
+
+const updateTextEditSchema = z
+  .object({
+    layerId: z.number().int().positive(),
+    text: z
+      .string()
+      .max(4_000)
+      .refine((value) => !value.includes("\0"), "Text must not contain null bytes"),
+  })
+  .strict();
+
+const updateTextSchema = z
+  .object({
+    documentName: z.string().min(1).max(255).optional(),
+    edits: z.array(updateTextEditSchema).min(1).max(25),
+    outputPsdName: plainTextOutputNameSchema("psd"),
+    outputPreviewName: plainTextOutputNameSchema("png"),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    const seen = new Set();
+    let totalLength = 0;
+    value.edits.forEach((edit, index) => {
+      totalLength += edit.text.length;
+      if (seen.has(edit.layerId)) {
+        context.addIssue({
+          code: "custom",
+          path: ["edits", index, "layerId"],
+          message: `Duplicate layerId: ${edit.layerId}`,
+        });
+      }
+      seen.add(edit.layerId);
+    });
+    if (totalLength > 20_000) {
+      context.addIssue({
+        code: "custom",
+        path: ["edits"],
+        message: "Total replacement text must not exceed 20,000 characters",
+      });
+    }
+    if (
+      value.documentName &&
+      value.outputPsdName.toLowerCase() === value.documentName.toLowerCase()
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["outputPsdName"],
+        message: "Output PSD name must not match the original document",
+      });
+    }
+  });
+
 app.get("/health", (_req, res) => {
   res.json({ ok: true, service: "photoshop-gpt-bridge", time: nowIso() });
 });
@@ -224,6 +295,24 @@ app.post("/api/jobs/recolor-layers", requireGptAuth, (req, res) => {
     status: job.status,
     message:
       "Recolor operation queued. The user must approve it in the local Photoshop agent, then poll job status.",
+  });
+});
+
+app.post("/api/jobs/update-text-layers", requireGptAuth, (req, res) => {
+  const parsed = updateTextSchema.safeParse(req.body || {});
+  if (!parsed.success) {
+    return res.status(400).json({
+      error: "Invalid request",
+      details: parsed.error.flatten(),
+    });
+  }
+
+  const job = createJob("updateTextLayers", parsed.data, true);
+  res.status(202).json({
+    jobId: job.id,
+    status: job.status,
+    message:
+      "Text update queued. Stop and wait for the user to approve it in the local Photoshop agent.",
   });
 });
 

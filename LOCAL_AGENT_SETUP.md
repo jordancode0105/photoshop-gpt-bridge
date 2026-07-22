@@ -57,6 +57,44 @@ Check the result:
 Invoke-RestMethod -Method Get -Uri "https://photoshop-gpt-bridge.onrender.com/api/jobs/$($job.jobId)" -Headers $headers
 ```
 
+## Text-update workflow
+
+1. Complete `POST /api/jobs/inspect-document` immediately before planning the text edit.
+2. Find the exact numeric ID, current `textInfo.contents`, and `textInfo.safeForContentOnlyReplacement` value.
+3. Start with one layer whose safety flag is `true`; mixed-style layers are intentionally unsupported.
+4. Use fresh versioned PSD and PNG output names in `POST /api/jobs/update-text-layers`.
+5. Review the complete job printed in the agent window and type uppercase `YES` exactly.
+6. After local approval is complete, poll `GET /api/jobs/{jobId}` until it succeeds or fails.
+7. Review the PNG and the layered PSD copy left open in Photoshop. Both files are written to `WORKING_FOLDER`.
+
+Example:
+
+```powershell
+$headers = @{ Authorization = "Bearer YOUR_GPT_ACTION_API_KEY" }
+$body = @{
+    documentName = "RWCMatchCard.psd"
+    edits = @(
+        @{
+            layerId = 123
+            text = "NEW TEXT"
+        }
+    )
+    outputPsdName = "RWCMatchCard_Text_v1.psd"
+    outputPreviewName = "RWCMatchCard_Text_v1.png"
+} | ConvertTo-Json -Depth 6
+$job = Invoke-RestMethod -Method Post -Uri "https://photoshop-gpt-bridge.onrender.com/api/jobs/update-text-layers" -Headers $headers -ContentType "application/json" -Body $body
+```
+
+After typing `YES`, check the result:
+
+```powershell
+Invoke-RestMethod -Method Get -Uri "https://photoshop-gpt-bridge.onrender.com/api/jobs/$($job.jobId)" -Headers $headers
+```
+
+Inspection reports `textInfo.contents`, text type, justification, uniform font/size/color when available, mixed-style flags, and a content-replacement safety flag. Optional metadata failures return null or an unsupported reason instead of failing the full inspection.
+
+Content replacement does not resize or fit text. Longer content can overflow a paragraph box or extend off-canvas. Always test one layer first and inspect both outputs. Existing output names are never overwritten, and mixed character/paragraph styles fail instead of being flattened.
+
 ## Troubleshooting
 
 - **No job appears:** verify the relay URL, device token, and `/health`, then confirm the relay process was not restarted (jobs are in memory).
@@ -65,5 +103,7 @@ Invoke-RestMethod -Method Get -Uri "https://photoshop-gpt-bridge.onrender.com/ap
 - **Existing effects cannot be preserved:** layers with multiple Color Overlay instances are rejected explicitly. Other effects are merged and preserved; if Photoshop cannot safely read or write the descriptor, the job fails without saving the duplicate.
 - **Output exists:** use the next version number for both output filenames. The agent never overwrites an existing PSD or PNG.
 - **Approval rejected:** queue a new job and type uppercase `YES` exactly after reviewing it.
+- **Text layer is unsupported:** inspect `textInfo.unsupportedReason`. Mixed or unreadable style ranges must be simplified manually before using content-only replacement.
+- **Text overflows:** shorten the replacement or resize/reformat manually in Photoshop; this operation never changes font size, bounds, transform, or paragraph settings.
 
-Photoshop runtime behavior must be verified manually against the installed Photoshop version because Color Overlay uses Action Manager where the Photoshop DOM has no equivalent API.
+Photoshop runtime behavior must be verified manually against the installed version. Color Overlay uses Action Manager, while text updates combine read-only Action Manager style-range inspection with DOM content replacement.

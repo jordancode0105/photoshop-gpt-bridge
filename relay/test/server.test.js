@@ -74,6 +74,16 @@ function validRecolor(overrides = {}) {
   };
 }
 
+function validTextUpdate(overrides = {}) {
+  return {
+    documentName: "MatchCard.psd",
+    edits: [{ layerId: 321, text: "NEW TEXT" }],
+    outputPsdName: "MatchCard_Text_v1.psd",
+    outputPreviewName: "MatchCard_Text_v1.png",
+    ...overrides,
+  };
+}
+
 test("creates a confirmed recolorLayers job", async () => {
   const created = await request("/api/jobs/recolor-layers", { body: validRecolor() });
   assert.equal(created.response.status, 202);
@@ -124,6 +134,85 @@ for (const [name, override] of invalidCases) {
     assert.equal(result.body.error, "Invalid request");
   });
 }
+
+test("creates a confirmed updateTextLayers job", async () => {
+  const created = await request("/api/jobs/update-text-layers", {
+    body: validTextUpdate(),
+  });
+  assert.equal(created.response.status, 202);
+  assert.equal(created.body.status, "pending");
+  assert.ok(created.body.jobId);
+
+  const status = await fetch(`${baseUrl}/api/jobs/${created.body.jobId}`, {
+    headers: { authorization: `Bearer ${gptToken}` },
+  });
+  assert.equal(status.status, 200);
+  const job = await status.json();
+  assert.equal(job.type, "updateTextLayers");
+  assert.equal(job.requiresConfirmation, true);
+});
+
+test("rejects text update without GPT authentication", async () => {
+  const result = await request("/api/jobs/update-text-layers", {
+    authenticated: false,
+    body: validTextUpdate(),
+  });
+  assert.equal(result.response.status, 401);
+});
+
+const invalidTextCases = [
+  ["empty edits", { edits: [] }],
+  ["more than 25 edits", { edits: Array.from({ length: 26 }, (_value, index) => ({
+    layerId: index + 1,
+    text: "text",
+  })) }],
+  ["invalid layer ID", { edits: [{ layerId: -1, text: "text" }] }],
+  ["duplicate layer IDs", { edits: [
+    { layerId: 9, text: "first" },
+    { layerId: 9, text: "second" },
+  ] }],
+  ["missing text", { edits: [{ layerId: 9 }] }],
+  ["text over 4,000 characters", { edits: [{ layerId: 9, text: "x".repeat(4_001) }] }],
+  ["total text over 20,000 characters", { edits: Array.from({ length: 6 }, (_value, index) => ({
+    layerId: index + 1,
+    text: "x".repeat(3_500),
+  })) }],
+  ["null byte", { edits: [{ layerId: 9, text: "before\0after" }] }],
+  ["PSD path traversal", { outputPsdName: "../escaped.psd" }],
+  ["PNG path traversal", { outputPreviewName: "folder\\escaped.png" }],
+  ["drive-qualified output", { outputPsdName: "C:escaped.psd" }],
+  ["output matching the original", { outputPsdName: "MatchCard.psd" }],
+  ["unknown request property", { unexpected: true }],
+  ["unknown edit property", { edits: [{ layerId: 9, text: "text", font: "Arial" }] }],
+];
+
+for (const [name, override] of invalidTextCases) {
+  test(`rejects text update with ${name}`, async () => {
+    const result = await request("/api/jobs/update-text-layers", {
+      body: validTextUpdate(override),
+    });
+    assert.equal(result.response.status, 400);
+    assert.equal(result.body.error, "Invalid request");
+  });
+}
+
+test("accepts intentionally empty replacement text", async () => {
+  const result = await request("/api/jobs/update-text-layers", {
+    body: validTextUpdate({ edits: [{ layerId: 321, text: "" }] }),
+  });
+  assert.equal(result.response.status, 202);
+  assert.ok(result.body.jobId);
+});
+
+test("accepts spaces, Unicode, tabs, and line breaks in replacement text", async () => {
+  const result = await request("/api/jobs/update-text-layers", {
+    body: validTextUpdate({
+      edits: [{ layerId: 321, text: "  Café 世界\tline one\r\nline two  " }],
+    }),
+  });
+  assert.equal(result.response.status, 202);
+  assert.ok(result.body.jobId);
+});
 
 test("existing inspect endpoint still creates a read-only job", async () => {
   const result = await request("/api/jobs/inspect-document", {

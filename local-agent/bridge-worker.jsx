@@ -1,7 +1,20 @@
 /* Photoshop GPT Bridge - ExtendScript worker */
 (function () {
     function quoteString(value) {
-        return '"' + String(value).replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/\r/g, "\\r").replace(/\n/g, "\\n").replace(/\t/g, "\\t") + '"';
+        var text = String(value), output = '"';
+        for (var i = 0; i < text.length; i++) {
+            var character = text.charAt(i), code = text.charCodeAt(i);
+            if (character === '"') output += '\\"';
+            else if (character === "\\") output += "\\\\";
+            else if (character === "\b") output += "\\b";
+            else if (character === "\f") output += "\\f";
+            else if (character === "\n") output += "\\n";
+            else if (character === "\r") output += "\\r";
+            else if (character === "\t") output += "\\t";
+            else if (code < 32) output += "\\u" + ("000" + code.toString(16)).slice(-4);
+            else output += character;
+        }
+        return output + '"';
     }
     function stringify(value) {
         if (value === null || typeof value === "undefined") return "null";
@@ -48,6 +61,120 @@
     function isSmartObject(layer) {
         try { return layer.typename === "ArtLayer" && layer.kind === LayerKind.SMARTOBJECT; } catch (_error) { return false; }
     }
+    function isTextLayer(layer) {
+        try { return layer.typename === "ArtLayer" && layer.kind === LayerKind.TEXT; } catch (_error) { return false; }
+    }
+    function normalizeTextForResult(value) {
+        return String(value).replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+    }
+    function normalizeTextForPhotoshop(value) {
+        return normalizeTextForResult(value).replace(/\n/g, "\r");
+    }
+    function readTextStyleRangeSummary(layer) {
+        var result = {
+            available: false,
+            textStyleRangeCount: null,
+            paragraphStyleRangeCount: null,
+            error: null
+        };
+        var layerId = safeLayerId(layer);
+        if (!layerId) {
+            result.error = "The text layer has no readable numeric ID.";
+            return result;
+        }
+        try {
+            var reference = new ActionReference();
+            reference.putIdentifier(charIDToTypeID("Lyr "), layerId);
+            var layerDescriptor = executeActionGet(reference);
+            var textKeyId = stringIDToTypeID("textKey");
+            if (!layerDescriptor.hasKey(textKeyId)) {
+                result.error = "Photoshop did not expose a text descriptor for this layer.";
+                return result;
+            }
+            var textDescriptor = layerDescriptor.getObjectValue(textKeyId);
+            var textStyleRangeId = stringIDToTypeID("textStyleRange");
+            var paragraphStyleRangeId = stringIDToTypeID("paragraphStyleRange");
+            if (!textDescriptor.hasKey(textStyleRangeId) || !textDescriptor.hasKey(paragraphStyleRangeId)) {
+                result.error = "Photoshop did not expose complete text and paragraph style ranges.";
+                return result;
+            }
+            result.textStyleRangeCount = textDescriptor.getList(textStyleRangeId).count;
+            result.paragraphStyleRangeCount = textDescriptor.getList(paragraphStyleRangeId).count;
+            result.available = true;
+            return result;
+        } catch (error) {
+            result.error = "Text style ranges could not be inspected safely: " + error.message;
+            return result;
+        }
+    }
+    function inspectTextInfo(layer) {
+        var info = {
+            contents: null,
+            textType: null,
+            justification: null,
+            font: null,
+            size: null,
+            color: null,
+            hasMultipleTextStyleRanges: null,
+            hasMultipleParagraphStyleRanges: null,
+            safeForContentOnlyReplacement: false,
+            unsupportedReason: null
+        };
+        if (!isTextLayer(layer)) {
+            info.unsupportedReason = "Layer is not a Photoshop text layer.";
+            return info;
+        }
+
+        var textItem = null;
+        try { textItem = layer.textItem; } catch (error) {
+            info.unsupportedReason = "Photoshop text metadata is unavailable: " + error.message;
+            return info;
+        }
+        try { info.contents = normalizeTextForResult(textItem.contents); } catch (_contentsError) {}
+        try { info.textType = String(textItem.kind); } catch (_typeError) {}
+        try { info.justification = String(textItem.justification); } catch (_justificationError) {}
+        var fullyLocked = false;
+        try { fullyLocked = Boolean(layer.allLocked); } catch (_lockError) {}
+
+        var ranges = readTextStyleRangeSummary(layer);
+        if (ranges.available) {
+            info.hasMultipleTextStyleRanges = ranges.textStyleRangeCount > 1;
+            info.hasMultipleParagraphStyleRanges = ranges.paragraphStyleRangeCount > 1;
+        }
+
+        var uniformStyles = ranges.available &&
+            ranges.textStyleRangeCount === 1 &&
+            ranges.paragraphStyleRangeCount === 1;
+        if (uniformStyles) {
+            try { info.font = { postScriptName: String(textItem.font) }; } catch (_fontError) {}
+            try {
+                var pointSize = Number(textItem.size.as("pt"));
+                if (isFinite(pointSize)) info.size = { value: pointSize, unit: "pt" };
+            } catch (_sizeError) {}
+            try {
+                var rgb = textItem.color.rgb;
+                var red = Number(rgb.red), green = Number(rgb.green), blue = Number(rgb.blue);
+                if (isFinite(red) && isFinite(green) && isFinite(blue)) {
+                    info.color = { red: red, green: green, blue: blue };
+                }
+            } catch (_colorError) {}
+        }
+
+        if (fullyLocked) {
+            info.unsupportedReason = "The text layer is fully locked.";
+        } else if (info.contents === null) {
+            info.unsupportedReason = "The current text contents could not be read safely.";
+        } else if (!ranges.available) {
+            info.unsupportedReason = ranges.error || "Text style ranges are unavailable.";
+        } else if (info.hasMultipleTextStyleRanges || info.hasMultipleParagraphStyleRanges) {
+            info.unsupportedReason = "Layer has unsupported mixed text or paragraph styling.";
+        } else if (ranges.textStyleRangeCount !== 1 || ranges.paragraphStyleRangeCount !== 1) {
+            info.unsupportedReason = "Layer does not have one safely addressable text and paragraph style range.";
+        } else {
+            info.safeForContentOnlyReplacement = true;
+        }
+        return info;
+    }
     function safeBounds(layer) {
         try {
             var b = layer.bounds;
@@ -56,12 +183,31 @@
     }
     function serializeLayer(layer, parentNames, indexPath) {
         var names = parentNames.slice(0); names.push(layer.name);
+        var textLayer = isTextLayer(layer);
         var item = {
             id: safeLayerId(layer), name: layer.name, path: names.join(" / "), indexPath: indexPath.slice(0),
             typename: layer.typename, kind: safeLayerKind(layer), isSmartObject: isSmartObject(layer),
             isGroup: layer.typename === "LayerSet", visible: Boolean(layer.visible), opacity: Number(layer.opacity),
             bounds: safeBounds(layer), children: []
         };
+        if (textLayer) {
+            try {
+                item.textInfo = inspectTextInfo(layer);
+            } catch (error) {
+                item.textInfo = {
+                    contents: null,
+                    textType: null,
+                    justification: null,
+                    font: null,
+                    size: null,
+                    color: null,
+                    hasMultipleTextStyleRanges: null,
+                    hasMultipleParagraphStyleRanges: null,
+                    safeForContentOnlyReplacement: false,
+                    unsupportedReason: "Optional text metadata could not be inspected: " + error.message
+                };
+            }
+        }
         if (layer.typename === "LayerSet") {
             for (var i = 0; i < layer.layers.length; i++) {
                 var childPath = indexPath.slice(0); childPath.push(i);
@@ -84,7 +230,7 @@
         return {
             document: { name: doc.name, width: toPixels(doc.width), height: toPixels(doc.height), resolution: Number(doc.resolution), saved: Boolean(doc.saved), path: fullPath },
             layers: tree,
-            guidance: "Use a numeric layer ID when available. Duplicate names are rejected for write operations."
+            guidance: "Use a fresh numeric layer ID. Text layers include textInfo; only layers marked safeForContentOnlyReplacement are eligible for text updates."
         };
     }
     function findLayerRecursive(layers, predicate, parentPath, matches) {
@@ -266,6 +412,84 @@
         var lower = String(fileName).toLowerCase();
         if (lower.substring(lower.length - extension.length) !== extension) throw new Error("Expected a " + extension + " file name.");
     }
+    function validatePlainTextOutputFileName(fileName, extension) {
+        if (typeof fileName !== "string" || fileName.length < extension.length + 1 || fileName.length > 255) {
+            throw new Error("Expected a plain " + extension + " output file name.");
+        }
+        if (/[\\\/\x00-\x1f<>:"|?*]/.test(fileName) || fileName.indexOf("..") !== -1 || /^[A-Za-z]:/.test(fileName) || /^\./.test(fileName)) {
+            throw new Error("Output file names must be plain names without paths, traversal, drive letters, or invalid characters.");
+        }
+        var lower = fileName.toLowerCase();
+        if (lower.substring(lower.length - extension.length) !== extension) {
+            throw new Error("Expected a " + extension + " output file name.");
+        }
+        var baseName = lower.substring(0, lower.length - extension.length);
+        if (/^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/.test(baseName)) {
+            throw new Error("The output uses a reserved device file name.");
+        }
+    }
+    function validateTextEdit(edit, seenIds) {
+        if (!edit || typeof edit.text !== "string") throw new Error("Every text edit requires a string text value.");
+        var layerId = Number(edit.layerId);
+        if (!isFinite(layerId) || layerId <= 0 || Math.floor(layerId) !== layerId) {
+            throw new Error("Every text-edit layerId must be a positive integer.");
+        }
+        if (seenIds[String(layerId)]) throw new Error("Duplicate text-edit layerId: " + layerId);
+        seenIds[String(layerId)] = true;
+        if (edit.text.length > 4000) throw new Error("Each replacement text value is limited to 4,000 characters.");
+        if (edit.text.indexOf("\u0000") !== -1) throw new Error("Replacement text must not contain null bytes.");
+        return { layerId: layerId, text: edit.text };
+    }
+    function resolveSourceTextTargets(document, edits) {
+        if (!(edits instanceof Array) || edits.length < 1 || edits.length > 25) {
+            throw new Error("Text edits must contain 1 through 25 entries.");
+        }
+        var targets = [], seenIds = {}, totalLength = 0;
+        for (var i = 0; i < edits.length; i++) {
+            var edit = validateTextEdit(edits[i], seenIds);
+            totalLength += edit.text.length;
+            if (totalLength > 20000) throw new Error("Total replacement text is limited to 20,000 characters.");
+
+            var matches = [];
+            findLayerRecursive(document.layers, function (layer) {
+                return safeLayerId(layer) === edit.layerId;
+            }, [], matches);
+            if (matches.length !== 1) throw new Error("Text layer ID " + edit.layerId + " was not found uniquely.");
+            if (!isTextLayer(matches[0].layer)) throw new Error("Layer ID " + edit.layerId + " is not a Photoshop text layer.");
+
+            var textInfo = inspectTextInfo(matches[0].layer);
+            if (!textInfo.safeForContentOnlyReplacement) {
+                throw new Error('Text layer "' + layerPathAtIndexPath(document, matches[0].indexPath) + '" is unsupported: ' + textInfo.unsupportedReason);
+            }
+            targets.push({
+                layer: matches[0].layer,
+                indexPath: matches[0].indexPath,
+                path: layerPathAtIndexPath(document, matches[0].indexPath),
+                previousText: textInfo.contents,
+                edit: edit
+            });
+        }
+        return targets;
+    }
+    function applyContentOnlyTextEdit(layer, requestedText) {
+        if (!isTextLayer(layer)) throw new Error("The duplicated target is no longer a Photoshop text layer.");
+        var originalName = layer.name;
+        var normalizedRequested = normalizeTextForResult(requestedText);
+        layer.textItem.contents = normalizeTextForPhotoshop(requestedText);
+        if (layer.name !== originalName) layer.name = originalName;
+        var observed = normalizeTextForResult(layer.textItem.contents);
+        if (observed !== normalizedRequested) {
+            throw new Error("Photoshop did not retain the requested text exactly after line-ending normalization.");
+        }
+        return normalizedRequested;
+    }
+    function removeJobOutput(file, label, failures) {
+        try {
+            if (file.exists && !file.remove()) failures.push(label + " could not be removed");
+        } catch (error) {
+            failures.push(label + " could not be removed: " + error.message);
+        }
+    }
     function childFile(folder, name) { return new File(folder.fsName + "/" + name); }
     function replaceSmartObject(input) {
         var payload = input.payload || {};
@@ -414,6 +638,119 @@
             throw error;
         }
     }
+    function updateTextLayers(input) {
+        var payload = input.payload || {};
+        validatePlainTextOutputFileName(payload.outputPsdName, ".psd");
+        validatePlainTextOutputFileName(payload.outputPreviewName, ".png");
+
+        var sourceDocument = getDocument(payload.documentName);
+        app.activeDocument = sourceDocument;
+        if (String(payload.outputPsdName).toLowerCase() === sourceDocument.name.toLowerCase()) {
+            throw new Error("The output PSD name must not match the original document.");
+        }
+
+        var workingFolder = new Folder(input.workingFolder);
+        if (!workingFolder.exists) throw new Error("Working folder does not exist: " + input.workingFolder);
+        var outputPsd = childFile(workingFolder, payload.outputPsdName);
+        var outputPreview = childFile(workingFolder, payload.outputPreviewName);
+        if (outputPsd.exists || outputPreview.exists) {
+            throw new Error("An output file already exists. Use new versioned output names.");
+        }
+
+        // Resolve and validate every source layer before duplication or editing.
+        var sourceTargets = resolveSourceTextTargets(sourceDocument, payload.edits);
+        var outputBaseName = payload.outputPsdName.replace(/\.psd$/i, "");
+        var workingDocument = null, previewDocument = null, outputPhaseStarted = false;
+        try {
+            workingDocument = sourceDocument.duplicate(outputBaseName, false);
+            app.activeDocument = workingDocument;
+
+            // Resolve and preflight every duplicate target before applying the first edit.
+            var duplicateTargets = [];
+            for (var i = 0; i < sourceTargets.length; i++) {
+                var duplicateLayer = getLayerByIndexPath(workingDocument, sourceTargets[i].indexPath);
+                if (!isTextLayer(duplicateLayer)) {
+                    throw new Error('Duplicated target "' + sourceTargets[i].path + '" is no longer a Photoshop text layer.');
+                }
+                var duplicateInfo = inspectTextInfo(duplicateLayer);
+                if (!duplicateInfo.safeForContentOnlyReplacement) {
+                    throw new Error('Duplicated text layer "' + sourceTargets[i].path + '" is unsupported: ' + duplicateInfo.unsupportedReason);
+                }
+                if (duplicateInfo.contents !== sourceTargets[i].previousText) {
+                    throw new Error('Duplicated text layer "' + sourceTargets[i].path + '" no longer matches the inspected source text.');
+                }
+                duplicateTargets.push({ layer: duplicateLayer, source: sourceTargets[i] });
+            }
+
+            var updatedLayers = [];
+            for (var j = 0; j < duplicateTargets.length; j++) {
+                var target = duplicateTargets[j];
+                var newText;
+                try {
+                    newText = applyContentOnlyTextEdit(target.layer, target.source.edit.text);
+                } catch (editError) {
+                    throw new Error('Could not safely update text layer "' + target.source.path + '": ' + editError.message);
+                }
+                updatedLayers.push({
+                    sourceLayerId: target.source.edit.layerId,
+                    outputLayerId: safeLayerId(target.layer),
+                    name: target.layer.name,
+                    path: target.source.path,
+                    previousText: target.source.previousText,
+                    newText: newText
+                });
+            }
+
+            var psdOptions = new PhotoshopSaveOptions();
+            psdOptions.layers = true;
+            psdOptions.embedColorProfile = true;
+            psdOptions.alphaChannels = true;
+            psdOptions.annotations = true;
+            psdOptions.spotColors = true;
+            if (outputPsd.exists || outputPreview.exists) {
+                throw new Error("An output file appeared while the job was running. No output was saved.");
+            }
+            outputPhaseStarted = true;
+            workingDocument.saveAs(outputPsd, psdOptions, false, Extension.LOWERCASE);
+
+            previewDocument = workingDocument.duplicate(outputBaseName + "_preview", true);
+            app.activeDocument = previewDocument;
+            previewDocument.flatten();
+            var pngOptions = new PNGSaveOptions();
+            pngOptions.interlaced = false;
+            previewDocument.saveAs(outputPreview, pngOptions, true, Extension.LOWERCASE);
+            previewDocument.close(SaveOptions.DONOTSAVECHANGES);
+            previewDocument = null;
+            app.activeDocument = workingDocument;
+
+            return {
+                originalDocument: sourceDocument.name,
+                outputDocumentOpen: workingDocument.name,
+                updatedLayers: updatedLayers,
+                outputPsdPath: outputPsd.fsName,
+                outputPreviewPath: outputPreview.fsName,
+                originalPreserved: true
+            };
+        } catch (error) {
+            if (previewDocument) {
+                try { previewDocument.close(SaveOptions.DONOTSAVECHANGES); } catch (_previewCloseError) {}
+            }
+            if (workingDocument) {
+                try { workingDocument.close(SaveOptions.DONOTSAVECHANGES); } catch (_workingCloseError) {}
+            }
+            try { app.activeDocument = sourceDocument; } catch (_activateSourceError) {}
+
+            var cleanupFailures = [];
+            if (outputPhaseStarted) {
+                removeJobOutput(outputPreview, "Partial PNG output", cleanupFailures);
+                removeJobOutput(outputPsd, "Partial PSD output", cleanupFailures);
+            }
+            if (cleanupFailures.length) {
+                throw new Error(error.message + " Cleanup error: " + cleanupFailures.join("; ") + ".");
+            }
+            throw error;
+        }
+    }
     function execute(input) {
     if (input.type === "inspectDocument") {
         return inspectDocument(input.payload || {});
@@ -423,6 +760,9 @@
     }
     if (input.type === "recolorLayers") {
         return recolorLayers(input);
+    }
+    if (input.type === "updateTextLayers") {
+        return updateTextLayers(input);
     }
     throw new Error("Unsupported operation: " + input.type);
 }

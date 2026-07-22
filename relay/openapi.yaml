@@ -4,8 +4,8 @@ info:
   version: 0.1.0
   description: >
     Queues narrowly scoped Photoshop jobs for a local agent. Inspection is
-    read-only. Smart Object replacement and layer recoloring require local
-    approval and always save a new PSD copy.
+    read-only. Smart Object replacement, layer recoloring, and text updates
+    require local approval and always save a new PSD copy.
 servers:
   - url: https://photoshop-gpt-bridge.onrender.com
 security:
@@ -16,8 +16,9 @@ paths:
       operationId: inspectPhotoshopDocument
       summary: Inspect the open Photoshop document and its complete layer tree
       description: >
-        Queue a read-only inspection. After receiving the jobId, call
-        getPhotoshopJobStatus until the job succeeds or fails.
+        Queue a read-only inspection. Text layers include safe textInfo metadata
+        and a content-replacement safety flag. Poll getPhotoshopJobStatus until
+        the job succeeds or fails.
       requestBody:
         required: false
         content:
@@ -200,10 +201,85 @@ paths:
         "401":
           $ref: "#/components/responses/Error"
 
+  /api/jobs/update-text-layers:
+    post:
+      operationId: updatePhotoshopTextLayers
+      summary: Replace content in uniformly styled Photoshop text layers
+      description: >
+        Use exact text-layer IDs from a fresh inspection for this consequential
+        write. The original is preserved and local approval is required. After
+        queueing, stop and wait for approval; only then call getPhotoshopJobStatus.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required:
+                - edits
+                - outputPsdName
+                - outputPreviewName
+              properties:
+                documentName:
+                  type: string
+                  minLength: 1
+                  maxLength: 255
+                  description: Optional exact open document name. Omit to use the active document.
+                edits:
+                  type: array
+                  minItems: 1
+                  maxItems: 25
+                  description: Unique fresh text-layer IDs; total replacement text is limited to 20,000 characters.
+                  items:
+                    type: object
+                    additionalProperties: false
+                    required: [layerId, text]
+                    properties:
+                      layerId:
+                        type: integer
+                        minimum: 1
+                        description: Exact numeric text-layer ID from a fresh inspection.
+                      text:
+                        type: string
+                        maxLength: 4000
+                        description: Replacement content. Empty text is allowed; null bytes are rejected.
+                outputPsdName:
+                  type: string
+                  minLength: 5
+                  maxLength: 255
+                  pattern: '^(?!\.)(?!.*\.\.)(?![A-Za-z]:)[^\\/\x00-\x1F<>:"|?*]+\.psd$'
+                  description: Plain versioned PSD name distinct from the original; no paths, traversal, or overwrite.
+                outputPreviewName:
+                  type: string
+                  minLength: 5
+                  maxLength: 255
+                  pattern: '^(?!\.)(?!.*\.\.)(?![A-Za-z]:)[^\\/\x00-\x1F<>:"|?*]+\.png$'
+                  description: Plain versioned PNG name; no paths, drive letters, traversal, or overwrite.
+            example:
+              documentName: RWCMatchCard.psd
+              edits:
+                - layerId: 123
+                  text: NEW TEXT
+              outputPsdName: RWCMatchCard_Text_v1.psd
+              outputPreviewName: RWCMatchCard_Text_v1.png
+      responses:
+        "202":
+          description: Text update queued; stop and wait for local approval
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QueuedJob"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+
   /api/jobs/{jobId}:
     get:
       operationId: getPhotoshopJobStatus
       summary: Get the current status and result of a Photoshop job
+      description: Return job state and result. For a write job, call only after the user confirms local approval is complete.
       parameters:
         - name: jobId
           in: path
@@ -266,7 +342,7 @@ components:
           type: string
           format: date-time
         result:
-          description: Operation-specific result, including a layer tree or output file locations.
+          description: Operation result. Inspection layer trees include textInfo on text layers.
         error:
           type: [string, "null"]
 
