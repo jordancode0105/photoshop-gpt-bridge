@@ -46,7 +46,97 @@
     }
     function parseJson(text) {
         if (typeof JSON !== "undefined" && JSON.parse) return JSON.parse(text);
-        return eval("(" + text + ")");
+
+        // ExtendScript installations do not consistently provide JSON.parse.
+        // Use a strict recursive-descent parser instead of eval so a locally
+        // selected manifest can never execute script code.
+        var source = String(text), offset = 0;
+        function fail(message) { throw new Error("Invalid JSON at character " + offset + ": " + message); }
+        function whitespace() {
+            while (offset < source.length && /[\x20\x09\x0a\x0d]/.test(source.charAt(offset))) offset++;
+        }
+        function parseString() {
+            if (source.charAt(offset) !== '"') fail("Expected a string.");
+            offset++;
+            var result = "";
+            while (offset < source.length) {
+                var character = source.charAt(offset++), escaped, hex;
+                if (character === '"') return result;
+                if (character === "\\") {
+                    if (offset >= source.length) fail("Unterminated escape sequence.");
+                    escaped = source.charAt(offset++);
+                    if (escaped === '"' || escaped === "\\" || escaped === "/") result += escaped;
+                    else if (escaped === "b") result += "\b";
+                    else if (escaped === "f") result += "\f";
+                    else if (escaped === "n") result += "\n";
+                    else if (escaped === "r") result += "\r";
+                    else if (escaped === "t") result += "\t";
+                    else if (escaped === "u") {
+                        hex = source.substr(offset, 4);
+                        if (!/^[0-9a-fA-F]{4}$/.test(hex)) fail("Invalid Unicode escape.");
+                        result += String.fromCharCode(parseInt(hex, 16));
+                        offset += 4;
+                    } else fail("Invalid escape sequence.");
+                } else {
+                    if (character.charCodeAt(0) < 32) fail("Unescaped control character in string.");
+                    result += character;
+                }
+            }
+            fail("Unterminated string.");
+        }
+        function parseNumber() {
+            var remainder = source.substring(offset);
+            var match = /^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?/.exec(remainder);
+            if (!match) fail("Invalid number.");
+            offset += match[0].length;
+            var value = Number(match[0]);
+            if (!isFinite(value)) fail("Number is outside the supported range.");
+            return value;
+        }
+        function parseArray() {
+            var result = [];
+            offset++; whitespace();
+            if (source.charAt(offset) === "]") { offset++; return result; }
+            while (true) {
+                result.push(parseValue()); whitespace();
+                if (source.charAt(offset) === "]") { offset++; return result; }
+                if (source.charAt(offset) !== ",") fail("Expected ',' or ']'.");
+                offset++; whitespace();
+            }
+        }
+        function parseObject() {
+            var result = {};
+            offset++; whitespace();
+            if (source.charAt(offset) === "}") { offset++; return result; }
+            while (true) {
+                if (source.charAt(offset) !== '"') fail("Expected an object key.");
+                var key = parseString();
+                if (key === "__proto__" || key === "prototype" || key === "constructor") fail("Unsafe object key.");
+                if (result.hasOwnProperty(key)) fail("Duplicate object key.");
+                whitespace();
+                if (source.charAt(offset) !== ":") fail("Expected ':'.");
+                offset++; whitespace();
+                result[key] = parseValue(); whitespace();
+                if (source.charAt(offset) === "}") { offset++; return result; }
+                if (source.charAt(offset) !== ",") fail("Expected ',' or '}'.");
+                offset++; whitespace();
+            }
+        }
+        function parseValue() {
+            whitespace();
+            var character = source.charAt(offset);
+            if (character === '"') return parseString();
+            if (character === "{") return parseObject();
+            if (character === "[") return parseArray();
+            if (character === "-" || /[0-9]/.test(character)) return parseNumber();
+            if (source.substr(offset, 4) === "true") { offset += 4; return true; }
+            if (source.substr(offset, 5) === "false") { offset += 5; return false; }
+            if (source.substr(offset, 4) === "null") { offset += 4; return null; }
+            fail("Expected a JSON value.");
+        }
+        var parsed = parseValue(); whitespace();
+        if (offset !== source.length) fail("Unexpected trailing content.");
+        return parsed;
     }
     function toPixels(value) {
         if (value === null || typeof value === "undefined") return null;
@@ -180,6 +270,12 @@
             var b = layer.bounds;
             return { left: toPixels(b[0]), top: toPixels(b[1]), right: toPixels(b[2]), bottom: toPixels(b[3]) };
         } catch (_error) { return null; }
+    }
+    function safeTransformBounds(layer) {
+        try {
+            var b = layer.boundsNoEffects;
+            return { left: toPixels(b[0]), top: toPixels(b[1]), right: toPixels(b[2]), bottom: toPixels(b[3]) };
+        } catch (_noEffectBoundsError) { return safeBounds(layer); }
     }
     function serializeLayer(layer, parentNames, indexPath) {
         var names = parentNames.slice(0); names.push(layer.name);
@@ -1173,6 +1269,1631 @@
             throw error;
         }
     }
+
+    // ---------------------------------------------------------------------
+    // Subscription-only match-card workflow
+    // ---------------------------------------------------------------------
+    var MATCH_ASSET_ROLES = [
+        "competitorLeft", "competitorRight", "competitorCenter", "showLogo",
+        "promotionLogo", "championshipLogo", "beltImage", "sponsorLogo",
+        "venueLogo", "suppliedCharacterArtwork", "suppliedPhotograph"
+    ];
+    var MATCH_TEXT_ROLES = [
+        "championship", "competitorLeftName", "competitorRightName",
+        "competitorCenterName", "matchTitle", "stipulation", "date", "time", "venue"
+    ];
+    var MATCH_FONT_ROLES = [
+        "mainTitle", "championshipLabel", "competitorNames", "stipulation",
+        "date", "time", "venue"
+    ];
+    var MATCH_LAYOUT_PRESETS = [
+        "two-competitor-title-center", "two-competitor-title-lower",
+        "three-competitor-title-center", "single-competitor-title-side"
+    ];
+    var MATCH_VISIBILITY_ROLES = [
+        "templateBackground", "atmosphere", "framesAndPanels", "competitorRenders",
+        "championshipAndBelt", "matchTitleGroup", "eventInformation", "showLogoGroup",
+        "finishingEffects", "competitorLeft", "competitorRight", "competitorCenter",
+        "showLogo", "promotionLogo", "championshipLogo", "beltImage", "sponsorLogo",
+        "venueLogo", "suppliedCharacterArtwork", "suppliedPhotograph", "championship",
+        "competitorLeftName", "competitorRightName", "competitorCenterName", "matchTitle",
+        "stipulation", "date", "time", "venue"
+    ];
+    var MATCH_SUPPORTED_INPUT_EXTENSIONS = [".png", ".jpg", ".jpeg", ".psd", ".tif", ".tiff"];
+
+    function own(object, key) { return object && Object.prototype.hasOwnProperty.call(object, key); }
+    function valueInList(value, list) {
+        for (var i = 0; i < list.length; i++) if (list[i] === value) return true;
+        return false;
+    }
+    function ownKeys(object) {
+        var keys = [];
+        for (var key in object) if (own(object, key)) keys.push(key);
+        return keys;
+    }
+    function requirePlainObject(value, label) {
+        if (!value || typeof value !== "object" || value instanceof Array) throw new Error(label + " must be an object.");
+        return value;
+    }
+    function assertAllowedKeys(object, allowed, label) {
+        requirePlainObject(object, label);
+        for (var key in object) {
+            if (own(object, key) && !valueInList(key, allowed)) throw new Error(label + " contains unsupported property: " + key);
+        }
+    }
+    function requireString(value, label, minimum, maximum, allowEmpty) {
+        if (typeof value !== "string") throw new Error(label + " must be a string.");
+        if ((!allowEmpty && value.length < minimum) || value.length > maximum) {
+            throw new Error(label + " must contain " + minimum + " through " + maximum + " characters.");
+        }
+        if (value.indexOf("\u0000") !== -1) throw new Error(label + " must not contain null bytes.");
+        return value;
+    }
+    function fileExtension(fileName) {
+        var dot = String(fileName).lastIndexOf(".");
+        return dot < 0 ? "" : String(fileName).substring(dot).toLowerCase();
+    }
+    function validateMatchFileName(fileName, extensions, label) {
+        requireString(fileName, label, 1, 255, false);
+        if (/[\\\/\x00-\x1f<>:"|?*]/.test(fileName) || fileName.indexOf("..") !== -1 || /^[A-Za-z]:/.test(fileName) || /^\./.test(fileName)) {
+            throw new Error(label + " must be a plain filename without paths, traversal, drive letters, or invalid characters.");
+        }
+        var lowerName = fileName.toLowerCase(), extension = "", extensionIndex;
+        for (extensionIndex = 0; extensionIndex < extensions.length; extensionIndex++) {
+            var candidate = String(extensions[extensionIndex]).toLowerCase();
+            if (lowerName.length > candidate.length && lowerName.substring(lowerName.length - candidate.length) === candidate && candidate.length > extension.length) extension = candidate;
+        }
+        if (!extension) throw new Error(label + " has an unsupported extension.");
+        var baseName = fileName.substring(0, fileName.length - extension.length);
+        if (!baseName || /[. ]$/.test(baseName)) throw new Error(label + " must not have an empty stem or a stem ending in a dot or space.");
+        if (/^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(baseName)) throw new Error(label + " uses a reserved device filename.");
+        return fileName;
+    }
+    function validateMatchOutputNames(payload) {
+        validateMatchFileName(payload.outputPsdName, [".psd"], "outputPsdName");
+        validateMatchFileName(payload.outputPreviewName, [".png"], "outputPreviewName");
+        validateMatchFileName(payload.outputManifestName, [".matchcard.json"], "outputManifestName");
+        var names = [payload.outputPsdName, payload.outputPreviewName, payload.outputManifestName], seen = {};
+        for (var i = 0; i < names.length; i++) {
+            var lowered = names[i].toLowerCase();
+            if (seen[lowered]) throw new Error("Output filenames must be distinct.");
+            seen[lowered] = true;
+        }
+    }
+    function validateRgb(value, label) {
+        assertAllowedKeys(requirePlainObject(value, label), ["red", "green", "blue"], label);
+        var result = {}, channels = ["red", "green", "blue"];
+        for (var i = 0; i < channels.length; i++) {
+            var channel = channels[i], number = Number(value[channel]);
+            if (!own(value, channel) || !isFinite(number) || number < 0 || number > 255 || Math.floor(number) !== number) {
+                throw new Error(label + "." + channel + " must be an integer from 0 through 255.");
+            }
+            result[channel] = number;
+        }
+        return result;
+    }
+    function validateCanvas(value) {
+        assertAllowedKeys(requirePlainObject(value, "canvas"), ["width", "height", "resolution"], "canvas");
+        var width = Number(value.width), height = Number(value.height), resolution = Number(value.resolution);
+        if (!isFinite(width) || Math.floor(width) !== width || width < 320 || width > 8192) throw new Error("canvas.width must be an integer from 320 through 8192.");
+        if (!isFinite(height) || Math.floor(height) !== height || height < 320 || height > 8192) throw new Error("canvas.height must be an integer from 320 through 8192.");
+        if (!isFinite(resolution) || Math.floor(resolution) !== resolution || resolution < 36 || resolution > 600) throw new Error("canvas.resolution must be an integer from 36 through 600.");
+        if (width * height > 40000000) throw new Error("The canvas is limited to 40,000,000 pixels.");
+    }
+    function validateTemplateBackground(value) {
+        assertAllowedKeys(requirePlainObject(value, "templateBackground"), ["fileName", "fitMode"], "templateBackground");
+        validateMatchFileName(value.fileName, [".png"], "templateBackground.fileName");
+        if (value.fitMode !== "contain" && value.fitMode !== "cover") throw new Error("templateBackground.fitMode must be contain or cover.");
+    }
+    function validateFontMap(value, label) {
+        assertAllowedKeys(requirePlainObject(value, label), MATCH_FONT_ROLES, label);
+        var keys = ownKeys(value);
+        if (!keys.length) throw new Error(label + " must contain at least one font request.");
+        for (var i = 0; i < keys.length; i++) {
+            requireString(value[keys[i]], label + "." + keys[i], 1, 100, false);
+            if (/[\x00-\x1f\x7f]/.test(value[keys[i]])) throw new Error(label + "." + keys[i] + " contains control characters.");
+        }
+    }
+    function validateCreateStyle(value) {
+        assertAllowedKeys(requirePlainObject(value, "style"), ["description", "primaryColor", "secondaryColor", "accentColor", "metallicColor", "layoutPreset", "fonts"], "style");
+        requireString(value.description, "style.description", 1, 500, false);
+        validateRgb(value.primaryColor, "style.primaryColor");
+        validateRgb(value.secondaryColor, "style.secondaryColor");
+        validateRgb(value.accentColor, "style.accentColor");
+        validateRgb(value.metallicColor, "style.metallicColor");
+        if (!valueInList(value.layoutPreset, MATCH_LAYOUT_PRESETS)) throw new Error("style.layoutPreset is unsupported.");
+        if (own(value, "fonts")) validateFontMap(value.fonts, "style.fonts");
+    }
+    function validateUpdateStyle(value) {
+        assertAllowedKeys(requirePlainObject(value, "changes.style"), ["primaryColor", "secondaryColor", "accentColor", "metallicColor", "fonts"], "changes.style");
+        var keys = ownKeys(value);
+        if (!keys.length) throw new Error("changes.style must contain at least one change.");
+        for (var i = 0; i < keys.length; i++) {
+            if (keys[i] === "fonts") validateFontMap(value.fonts, "changes.style.fonts");
+            else validateRgb(value[keys[i]], "changes.style." + keys[i]);
+        }
+    }
+    function validateAssetMap(value, label, requireCore) {
+        assertAllowedKeys(requirePlainObject(value, label), MATCH_ASSET_ROLES, label);
+        var keys = ownKeys(value);
+        if (!keys.length) throw new Error(label + " must contain at least one asset.");
+        for (var i = 0; i < keys.length; i++) validateMatchFileName(value[keys[i]], MATCH_SUPPORTED_INPUT_EXTENSIONS, label + "." + keys[i]);
+        if (requireCore) {
+            if (!own(value, "showLogo")) throw new Error("assets.showLogo is required.");
+            if (!own(value, "competitorLeft") && !own(value, "competitorRight") && !own(value, "competitorCenter")) {
+                throw new Error("At least one competitor asset is required.");
+            }
+        }
+    }
+    function validateTextMap(value, label) {
+        assertAllowedKeys(requirePlainObject(value, label), MATCH_TEXT_ROLES, label);
+        var keys = ownKeys(value), total = 0;
+        if (!keys.length) throw new Error(label + " must contain at least one text field.");
+        for (var i = 0; i < keys.length; i++) {
+            requireString(value[keys[i]], label + "." + keys[i], 0, 1000, true);
+            total += value[keys[i]].length;
+        }
+        if (total > 5000) throw new Error(label + " is limited to 5,000 total characters.");
+    }
+    function validatePlacement(value, label) {
+        var fields = ["coordinateSpace", "x", "y", "fitMode", "scale", "maxWidth", "maxHeight", "clippingMask", "nonGenerativeMask", "dropShadow", "outerGlow"];
+        assertAllowedKeys(requirePlainObject(value, label), fields, label);
+        var coordinateSpace = own(value, "coordinateSpace") ? value.coordinateSpace : "normalized";
+        if (coordinateSpace !== "normalized" && coordinateSpace !== "pixels") throw new Error(label + ".coordinateSpace must be normalized or pixels.");
+        if (own(value, "x") !== own(value, "y")) throw new Error(label + ".x and .y must be supplied together.");
+        if (own(value, "x")) {
+            var x = Number(value.x), y = Number(value.y);
+            if (!isFinite(x) || !isFinite(y)) throw new Error(label + ".x and .y must be finite numbers.");
+            if (coordinateSpace === "normalized") {
+                if (x < 0 || x > 1 || y < 0 || y > 1) throw new Error(label + " normalized x/y must be from 0 through 1.");
+            } else if (Math.floor(x) !== x || Math.floor(y) !== y || x < -16384 || x > 16384 || y < -16384 || y > 16384) {
+                throw new Error(label + " pixel x/y must be integers from -16384 through 16384.");
+            }
+        }
+        if (own(value, "fitMode") && value.fitMode !== "contain" && value.fitMode !== "cover" && value.fitMode !== "keep-transform") throw new Error(label + ".fitMode is unsupported.");
+        if (own(value, "scale")) {
+            var scale = Number(value.scale);
+            if (!isFinite(scale) || scale < 0.05 || scale > 10) throw new Error(label + ".scale must be from 0.05 through 10.");
+        }
+        var dimensions = ["maxWidth", "maxHeight"];
+        for (var i = 0; i < dimensions.length; i++) if (own(value, dimensions[i])) {
+            var dimension = Number(value[dimensions[i]]);
+            if (!isFinite(dimension)) throw new Error(label + "." + dimensions[i] + " must be a finite number.");
+            if (coordinateSpace === "normalized") {
+                if (dimension <= 0 || dimension > 1) throw new Error(label + " normalized maximum dimensions must be greater than 0 and at most 1.");
+            } else if (Math.floor(dimension) !== dimension || dimension < 1 || dimension > 16384) {
+                throw new Error(label + " pixel maximum dimensions must be integers from 1 through 16384.");
+            }
+        }
+        var booleans = ["clippingMask", "nonGenerativeMask", "dropShadow", "outerGlow"];
+        for (var j = 0; j < booleans.length; j++) if (own(value, booleans[j]) && typeof value[booleans[j]] !== "boolean") throw new Error(label + "." + booleans[j] + " must be boolean.");
+    }
+    function validatePlacements(value, label) {
+        assertAllowedKeys(requirePlainObject(value, label), MATCH_ASSET_ROLES, label);
+        var keys = ownKeys(value);
+        if (!keys.length) throw new Error(label + " must contain at least one placement.");
+        for (var i = 0; i < keys.length; i++) validatePlacement(value[keys[i]], label + "." + keys[i]);
+    }
+    function validateVisibility(value) {
+        if (!(value instanceof Array) || value.length < 1 || value.length > 40) throw new Error("changes.visibility must contain 1 through 40 entries.");
+        var seen = {};
+        for (var i = 0; i < value.length; i++) {
+            var entry = requirePlainObject(value[i], "changes.visibility entry");
+            assertAllowedKeys(entry, ["role", "visible"], "changes.visibility entry");
+            if (!valueInList(entry.role, MATCH_VISIBILITY_ROLES)) throw new Error("Unsupported visibility role: " + entry.role);
+            if (seen[entry.role]) throw new Error("Duplicate visibility role: " + entry.role);
+            if (typeof entry.visible !== "boolean") throw new Error("Visibility values must be boolean.");
+            seen[entry.role] = true;
+        }
+    }
+    function validateCreateMatchCardPayload(payload) {
+        var allowed = ["briefName", "canvas", "templateBackground", "style", "assets", "text", "placements", "outputPsdName", "outputPreviewName", "outputManifestName"];
+        assertAllowedKeys(requirePlainObject(payload, "createMatchCard payload"), allowed, "createMatchCard payload");
+        requireString(payload.briefName, "briefName", 1, 200, false);
+        validateCanvas(payload.canvas);
+        validateTemplateBackground(payload.templateBackground);
+        validateCreateStyle(payload.style);
+        validateAssetMap(payload.assets, "assets", true);
+        if (payload.style.layoutPreset === "two-competitor-title-center" || payload.style.layoutPreset === "two-competitor-title-lower") {
+            if (!own(payload.assets, "competitorLeft") || !own(payload.assets, "competitorRight")) throw new Error("The selected two-competitor layout requires competitorLeft and competitorRight assets.");
+        } else if (payload.style.layoutPreset === "three-competitor-title-center") {
+            if (!own(payload.assets, "competitorLeft") || !own(payload.assets, "competitorCenter") || !own(payload.assets, "competitorRight")) throw new Error("The selected three-competitor layout requires left, center, and right competitor assets.");
+        } else if (payload.style.layoutPreset === "single-competitor-title-side" && !own(payload.assets, "competitorCenter")) {
+            throw new Error("The selected single-competitor layout requires competitorCenter.");
+        }
+        validateTextMap(payload.text, "text");
+        if (own(payload, "placements")) {
+            validatePlacements(payload.placements, "placements");
+            var placementKeys = ownKeys(payload.placements);
+            for (var placementIndex = 0; placementIndex < placementKeys.length; placementIndex++) {
+                if (!own(payload.assets, placementKeys[placementIndex])) throw new Error("placements." + placementKeys[placementIndex] + " does not reference a supplied asset.");
+            }
+        }
+        validateMatchOutputNames(payload);
+        return payload;
+    }
+    function validateUpdateMatchCardPayload(payload) {
+        var allowed = ["manifestFileName", "changes", "outputPsdName", "outputPreviewName", "outputManifestName"];
+        assertAllowedKeys(requirePlainObject(payload, "updateMatchCard payload"), allowed, "updateMatchCard payload");
+        validateMatchFileName(payload.manifestFileName, [".matchcard.json"], "manifestFileName");
+        assertAllowedKeys(requirePlainObject(payload.changes, "changes"), ["templateBackground", "style", "assets", "text", "placements", "visibility"], "changes");
+        var keys = ownKeys(payload.changes);
+        if (!keys.length) throw new Error("changes must contain at least one update.");
+        for (var i = 0; i < keys.length; i++) {
+            var key = keys[i];
+            if (key === "templateBackground") validateTemplateBackground(payload.changes[key]);
+            else if (key === "style") validateUpdateStyle(payload.changes[key]);
+            else if (key === "assets") validateAssetMap(payload.changes[key], "changes.assets", false);
+            else if (key === "text") validateTextMap(payload.changes[key], "changes.text");
+            else if (key === "placements") validatePlacements(payload.changes[key], "changes.placements");
+            else if (key === "visibility") validateVisibility(payload.changes[key]);
+        }
+        validateMatchOutputNames(payload);
+        if (payload.manifestFileName.toLowerCase() === payload.outputManifestName.toLowerCase()) throw new Error("The update manifest output must use a new filename.");
+        return payload;
+    }
+
+    function configuredBaleCc(input, required) {
+        var packageFile = own(input, "baleCcPackageFile") ? String(input.baleCcPackageFile) : "";
+        var groupName = own(input, "baleCcGroupName") ? String(input.baleCcGroupName) : "";
+        if (!packageFile || !groupName) {
+            if (required) throw new Error("BALE_CC_PACKAGE_FILE and BALE_CC_GROUP_NAME are required in the local agent configuration.");
+            return { configured: false, packageFileName: packageFile || null, groupName: groupName || null };
+        }
+        validateMatchFileName(packageFile, [".psd"], "Configured Bale CC package filename");
+        requireString(groupName, "Configured Bale CC group name", 1, 255, false);
+        return { configured: true, packageFileName: packageFile, groupName: groupName };
+    }
+    function matchWorkingFolder(input) {
+        if (!own(input, "workingFolder") || typeof input.workingFolder !== "string") throw new Error("The trusted working folder was not supplied by the local agent.");
+        var folder = new Folder(input.workingFolder);
+        if (!folder.exists) throw new Error("The configured working folder does not exist.");
+        return folder;
+    }
+    function findOpenDocumentForFile(file) {
+        var wanted = String(file.fsName).toLowerCase();
+        for (var i = 0; i < app.documents.length; i++) {
+            try {
+                if (String(app.documents[i].fullName.fsName).toLowerCase() === wanted) return app.documents[i];
+            } catch (_unsavedDocumentError) {}
+        }
+        return null;
+    }
+    function currentDocumentOrNull() {
+        try { return app.documents.length ? app.activeDocument : null; } catch (_activeError) { return null; }
+    }
+    function restoreActiveDocument(document) {
+        if (!document) return;
+        try { app.activeDocument = document; } catch (_restoreError) {}
+    }
+    function fileImageDimensions(file) {
+        var previous = currentDocumentOrNull(), document = null, ownedDocument = false;
+        var previousDialogs = null;
+        try { previousDialogs = app.displayDialogs; app.displayDialogs = DialogModes.NO; } catch (_dialogReadError) {}
+        try {
+            document = findOpenDocumentForFile(file);
+            if (!document) { document = app.open(file); ownedDocument = true; }
+            return { width: toPixels(document.width), height: toPixels(document.height) };
+        } catch (_metadataError) {
+            return { width: null, height: null };
+        } finally {
+            if (ownedDocument && document) {
+                try { document.close(SaveOptions.DONOTSAVECHANGES); } catch (_metadataCloseError) {}
+            }
+            if (previousDialogs !== null) try { app.displayDialogs = previousDialogs; } catch (_dialogRestoreError) {}
+            restoreActiveDocument(previous);
+        }
+    }
+    function suggestedMatchAssetRole(fileName, baleCc) {
+        var lower = String(fileName).toLowerCase(), stem = lower.replace(/\.[^.]+$/, "");
+        if (baleCc.configured && lower === baleCc.packageFileName.toLowerCase()) return "baleCcPackage";
+        if (/(^|[_ .-])(template|background|templatebg|template_bg|bg)([_ .-]|$)/.test(stem)) return "templateBackground";
+        if (/(^|[_ .-])(competitor|render|character)[_ .-]*left([_ .-]|$)|(^|[_ .-])left[_ .-]*(competitor|render|character)([_ .-]|$)/.test(stem)) return "competitorLeft";
+        if (/(^|[_ .-])(competitor|render|character)[_ .-]*right([_ .-]|$)|(^|[_ .-])right[_ .-]*(competitor|render|character)([_ .-]|$)/.test(stem)) return "competitorRight";
+        if (/(^|[_ .-])(competitor|render|character)[_ .-]*(center|centre)([_ .-]|$)|(^|[_ .-])(center|centre)[_ .-]*(competitor|render|character)([_ .-]|$)/.test(stem)) return "competitorCenter";
+        if (/(championship[_ .-]*logo|title[_ .-]*logo)/.test(stem)) return "championshipLogo";
+        if (/(^|[_ .-])(belt|titlebelt|championshipbelt|title)([_ .-]|$)/.test(stem)) return "beltImage";
+        if (/(venue|arena)[_ .-]*logo/.test(stem)) return "venueLogo";
+        if (/sponsor[_ .-]*logo/.test(stem)) return "sponsorLogo";
+        if (/promotion[_ .-]*logo/.test(stem)) return "promotionLogo";
+        if (/(show|event)[_ .-]*logo/.test(stem) || /(^|[_ .-])eccw([_ .-]|$)/.test(stem)) return "showLogo";
+        if (/(photo|photograph)/.test(stem)) return "suppliedPhotograph";
+        if (/(character|render)/.test(stem)) return "suppliedCharacterArtwork";
+        return null;
+    }
+    function listMatchCardAssets(input) {
+        var payload = input.payload || {};
+        assertAllowedKeys(requirePlainObject(payload, "listMatchCardAssets payload"), [], "listMatchCardAssets payload");
+        var folder = matchWorkingFolder(input), baleCc = configuredBaleCc(input, false);
+        var entries = folder.getFiles(), files = [], i;
+        for (i = 0; i < entries.length; i++) {
+            if (!(entries[i] instanceof File)) continue;
+            var extension = fileExtension(entries[i].name);
+            if (valueInList(extension, MATCH_SUPPORTED_INPUT_EXTENSIONS)) files.push(entries[i]);
+        }
+        files.sort(function (left, right) {
+            var a = String(left.name).toLowerCase(), b = String(right.name).toLowerCase();
+            return a < b ? -1 : (a > b ? 1 : 0);
+        });
+        var assets = [];
+        for (i = 0; i < files.length; i++) {
+            var dimensions = fileImageDimensions(files[i]);
+            var ext = fileExtension(files[i].name), suggestedRole = suggestedMatchAssetRole(files[i].name, baleCc);
+            var raster = ext === ".png" || ext === ".jpg" || ext === ".jpeg" || ext === ".tif" || ext === ".tiff";
+            assets.push({
+                fileName: files[i].name,
+                extension: ext,
+                fileSizeBytes: Number(files[i].length),
+                width: dimensions.width,
+                height: dimensions.height,
+                isPsd: ext === ".psd",
+                isPngOrJpeg: ext === ".png" || ext === ".jpg" || ext === ".jpeg",
+                suggestedRole: suggestedRole,
+                matchesConfiguredBaleCcPackage: baleCc.configured && String(files[i].name).toLowerCase() === baleCc.packageFileName.toLowerCase(),
+                appearsSuitableAsTemplateBackground: ext === ".png" && suggestedRole === "templateBackground"
+            });
+        }
+        return {
+            assets: assets,
+            baleCcConfigured: baleCc.configured,
+            baleCcPackageFileName: baleCc.packageFileName,
+            supportedExtensions: MATCH_SUPPORTED_INPUT_EXTENSIONS.slice(0),
+            recursive: false
+        };
+    }
+    function findNamedGroups(layers, groupName, matches) {
+        for (var i = 0; i < layers.length; i++) {
+            if (layers[i].typename === "LayerSet") {
+                if (layers[i].name === groupName) matches.push(layers[i]);
+                findNamedGroups(layers[i].layers, groupName, matches);
+            }
+        }
+    }
+    function inspectBaleCcPackage(input) {
+        var baleCc = configuredBaleCc(input, false);
+        var result = {
+            configured: baleCc.configured,
+            packageFileName: baleCc.packageFileName,
+            groupName: baleCc.groupName,
+            packageExists: false,
+            matchingGroupCount: 0,
+            available: false,
+            issue: null
+        };
+        if (!baleCc.configured) {
+            result.issue = "BALE_CC_PACKAGE_FILE and BALE_CC_GROUP_NAME are not fully configured in the local agent.";
+            return result;
+        }
+        var folder = matchWorkingFolder(input), packageFile = childFile(folder, baleCc.packageFileName);
+        result.packageExists = packageFile.exists;
+        if (!packageFile.exists) {
+            result.issue = "Missing Bale CC package: " + baleCc.packageFileName;
+            return result;
+        }
+        var previous = currentDocumentOrNull(), document = null, ownedDocument = false, previousDialogs = null;
+        try { previousDialogs = app.displayDialogs; app.displayDialogs = DialogModes.NO; } catch (_baleDialogReadError) {}
+        try {
+            document = findOpenDocumentForFile(packageFile);
+            if (!document) { document = app.open(packageFile); ownedDocument = true; }
+            else if (!document.saved) {
+                result.issue = "The Bale CC package is open with unsaved changes; save or close it before running this job.";
+                return result;
+            }
+            var matches = [];
+            findNamedGroups(document.layers, baleCc.groupName, matches);
+            result.matchingGroupCount = matches.length;
+            result.available = matches.length === 1;
+            if (!result.available) result.issue = "Expected exactly one Bale CC group named \"" + baleCc.groupName + "\"; found " + matches.length + ".";
+        } catch (error) {
+            result.issue = "Could not inspect Bale CC package: " + error.message;
+        } finally {
+            if (ownedDocument && document) try { document.close(SaveOptions.DONOTSAVECHANGES); } catch (_baleCloseError) {}
+            if (previousDialogs !== null) try { app.displayDialogs = previousDialogs; } catch (_baleDialogRestoreError) {}
+            restoreActiveDocument(previous);
+        }
+        return result;
+    }
+    function pushUniqueString(list, value) {
+        for (var i = 0; i < list.length; i++) if (String(list[i]).toLowerCase() === String(value).toLowerCase()) return;
+        list.push(value);
+    }
+    function preflightCreateMatchCard(input, payload) {
+        var folder = matchWorkingFolder(input), missing = [], existingOutputs = [], requiredFiles = [];
+        requiredFiles.push(payload.templateBackground.fileName);
+        var assetKeys = ownKeys(payload.assets), i;
+        for (i = 0; i < assetKeys.length; i++) requiredFiles.push(payload.assets[assetKeys[i]]);
+        var bale = configuredBaleCc(input, false);
+        if (bale.configured) requiredFiles.push(bale.packageFileName);
+        for (i = 0; i < requiredFiles.length; i++) if (!childFile(folder, requiredFiles[i]).exists) pushUniqueString(missing, requiredFiles[i]);
+        var outputs = [payload.outputPsdName, payload.outputPreviewName, payload.outputManifestName];
+        for (i = 0; i < outputs.length; i++) if (childFile(folder, outputs[i]).exists) existingOutputs.push(outputs[i]);
+        var baleStatus = inspectBaleCcPackage(input);
+        return {
+            ready: missing.length === 0 && existingOutputs.length === 0 && baleStatus.available,
+            missingFiles: missing,
+            existingOutputs: existingOutputs,
+            baleCc: baleStatus
+        };
+    }
+    function plannedMatchCardGroups() {
+        return [
+            "00 - BALE CC", "10 - TEMPLATE BACKGROUND", "20 - ATMOSPHERE",
+            "30 - FRAMES AND PANELS", "40 - COMPETITOR RENDERS",
+            "50 - CHAMPIONSHIP AND BELT", "60 - MATCH TITLE",
+            "70 - EVENT INFORMATION", "80 - SHOW LOGO", "90 - FINISHING EFFECTS"
+        ];
+    }
+    function plannedTextMappings(text) {
+        var names = {
+            championship: "CHAMPIONSHIP LABEL", competitorLeftName: "COMPETITOR LEFT NAME",
+            competitorRightName: "COMPETITOR RIGHT NAME", competitorCenterName: "COMPETITOR CENTER NAME",
+            matchTitle: "MAIN MATCH TITLE", stipulation: "MATCH STIPULATION", date: "EVENT DATE",
+            time: "EVENT TIME", venue: "EVENT VENUE"
+        };
+        var result = [], keys = ownKeys(text);
+        for (var i = 0; i < keys.length; i++) result.push({ role: keys[i], layerName: names[keys[i]], value: text[keys[i]] });
+        return result;
+    }
+    function planMatchCard(input) {
+        var payload = validateCreateMatchCardPayload(input.payload || {});
+        var preflight = preflightCreateMatchCard(input, payload);
+        return {
+            ready: preflight.ready,
+            missingFiles: preflight.missingFiles,
+            existingOutputs: preflight.existingOutputs,
+            baleCc: preflight.baleCc,
+            plannedLayerGroups: plannedMatchCardGroups(),
+            textMappings: plannedTextMappings(payload.text),
+            assetMappings: payload.assets,
+            templateBackground: payload.templateBackground,
+            outputPsdName: payload.outputPsdName,
+            outputPreviewName: payload.outputPreviewName,
+            outputManifestName: payload.outputManifestName,
+            performsPhotoshopWrite: false
+        };
+    }
+
+    var MATCH_ASSET_LAYER_NAMES = {
+        competitorLeft: "COMPETITOR LEFT - SMART OBJECT",
+        competitorRight: "COMPETITOR RIGHT - SMART OBJECT",
+        competitorCenter: "COMPETITOR CENTER - SMART OBJECT",
+        showLogo: "SHOW LOGO - SMART OBJECT",
+        promotionLogo: "PROMOTION LOGO - SMART OBJECT",
+        championshipLogo: "CHAMPIONSHIP LOGO - SMART OBJECT",
+        beltImage: "CHAMPIONSHIP BELT - SMART OBJECT",
+        sponsorLogo: "SPONSOR LOGO - SMART OBJECT",
+        venueLogo: "VENUE LOGO - SMART OBJECT",
+        suppliedCharacterArtwork: "SUPPLIED CHARACTER ARTWORK - SMART OBJECT",
+        suppliedPhotograph: "SUPPLIED PHOTOGRAPH - SMART OBJECT"
+    };
+    var MATCH_TEXT_LAYER_NAMES = {
+        championship: "CHAMPIONSHIP LABEL",
+        competitorLeftName: "COMPETITOR LEFT NAME",
+        competitorRightName: "COMPETITOR RIGHT NAME",
+        competitorCenterName: "COMPETITOR CENTER NAME",
+        matchTitle: "MAIN MATCH TITLE",
+        stipulation: "MATCH STIPULATION",
+        date: "EVENT DATE",
+        time: "EVENT TIME",
+        venue: "EVENT VENUE"
+    };
+    var MATCH_GROUP_DEFINITIONS = [
+        { role: "templateBackground", name: "10 - TEMPLATE BACKGROUND" },
+        { role: "atmosphere", name: "20 - ATMOSPHERE" },
+        { role: "framesAndPanels", name: "30 - FRAMES AND PANELS" },
+        { role: "competitorRenders", name: "40 - COMPETITOR RENDERS" },
+        { role: "championshipAndBelt", name: "50 - CHAMPIONSHIP AND BELT" },
+        { role: "matchTitleGroup", name: "60 - MATCH TITLE" },
+        { role: "eventInformation", name: "70 - EVENT INFORMATION" },
+        { role: "showLogoGroup", name: "80 - SHOW LOGO" },
+        { role: "finishingEffects", name: "90 - FINISHING EFFECTS" }
+    ];
+    function groupForAssetRole(groups, role) {
+        if (role === "competitorLeft" || role === "competitorRight" || role === "competitorCenter" || role === "suppliedCharacterArtwork" || role === "suppliedPhotograph") return groups.competitorRenders;
+        if (role === "beltImage" || role === "championshipLogo") return groups.championshipAndBelt;
+        if (role === "showLogo" || role === "promotionLogo") return groups.showLogoGroup;
+        if (role === "venueLogo" || role === "sponsorLogo") return groups.eventInformation;
+        return groups.competitorRenders;
+    }
+    function createMatchCardGroups(document) {
+        var groups = {};
+        // Photoshop inserts new groups at the top. Creating 10 through 90
+        // therefore leaves finishing overlays above the opaque background.
+        for (var i = 0; i < MATCH_GROUP_DEFINITIONS.length; i++) {
+            var group = document.layerSets.add();
+            group.name = MATCH_GROUP_DEFINITIONS[i].name;
+            groups[MATCH_GROUP_DEFINITIONS[i].role] = group;
+        }
+        return groups;
+    }
+    function createRectangleFill(document, group, name, bounds, color, opacity, blendMode) {
+        app.activeDocument = document;
+        var makeDescriptor = new ActionDescriptor(), makeReference = new ActionReference();
+        makeReference.putClass(stringIDToTypeID("contentLayer"));
+        makeDescriptor.putReference(charIDToTypeID("null"), makeReference);
+        var contentDescriptor = new ActionDescriptor(), colorLayerDescriptor = new ActionDescriptor(), colorDescriptor = new ActionDescriptor();
+        colorDescriptor.putDouble(charIDToTypeID("Rd  "), Number(color.red));
+        colorDescriptor.putDouble(charIDToTypeID("Grn "), Number(color.green));
+        colorDescriptor.putDouble(charIDToTypeID("Bl  "), Number(color.blue));
+        colorLayerDescriptor.putObject(charIDToTypeID("Clr "), charIDToTypeID("RGBC"), colorDescriptor);
+        contentDescriptor.putObject(charIDToTypeID("Type"), stringIDToTypeID("solidColorLayer"), colorLayerDescriptor);
+        var rectangleDescriptor = new ActionDescriptor();
+        rectangleDescriptor.putUnitDouble(charIDToTypeID("Top "), charIDToTypeID("#Pxl"), Number(bounds.top));
+        rectangleDescriptor.putUnitDouble(charIDToTypeID("Left"), charIDToTypeID("#Pxl"), Number(bounds.left));
+        rectangleDescriptor.putUnitDouble(charIDToTypeID("Btom"), charIDToTypeID("#Pxl"), Number(bounds.bottom));
+        rectangleDescriptor.putUnitDouble(charIDToTypeID("Rght"), charIDToTypeID("#Pxl"), Number(bounds.right));
+        contentDescriptor.putObject(charIDToTypeID("Shp "), charIDToTypeID("Rctn"), rectangleDescriptor);
+        makeDescriptor.putObject(charIDToTypeID("Usng"), stringIDToTypeID("contentLayer"), contentDescriptor);
+        executeAction(charIDToTypeID("Mk  "), makeDescriptor, DialogModes.NO);
+        var layer = document.activeLayer;
+        layer.name = name;
+        if (typeof opacity !== "undefined") layer.opacity = Number(opacity);
+        try {
+            if (blendMode === "screen") layer.blendMode = BlendMode.SCREEN;
+            else if (blendMode === "multiply") layer.blendMode = BlendMode.MULTIPLY;
+            else layer.blendMode = BlendMode.NORMAL;
+        } catch (_shapeBlendError) {}
+        layer.move(group, ElementPlacement.INSIDE);
+        document.activeLayer = layer;
+        return layer;
+    }
+    function setActiveSolidFillColor(color) {
+        var setDescriptor = new ActionDescriptor(), reference = new ActionReference();
+        reference.putEnumerated(stringIDToTypeID("contentLayer"), charIDToTypeID("Ordn"), charIDToTypeID("Trgt"));
+        setDescriptor.putReference(charIDToTypeID("null"), reference);
+        var solidDescriptor = new ActionDescriptor(), colorDescriptor = new ActionDescriptor();
+        colorDescriptor.putDouble(charIDToTypeID("Rd  "), Number(color.red));
+        colorDescriptor.putDouble(charIDToTypeID("Grn "), Number(color.green));
+        colorDescriptor.putDouble(charIDToTypeID("Bl  "), Number(color.blue));
+        solidDescriptor.putObject(charIDToTypeID("Clr "), charIDToTypeID("RGBC"), colorDescriptor);
+        setDescriptor.putObject(charIDToTypeID("T   "), stringIDToTypeID("solidColorLayer"), solidDescriptor);
+        executeAction(charIDToTypeID("setd"), setDescriptor, DialogModes.NO);
+    }
+    function createProceduralMatchLayers(document, groups, style, semantic) {
+        var width = toPixels(document.width), height = toPixels(document.height);
+        var titleBounds = { left: width * 0.28, top: height * 0.48, right: width * 0.72, bottom: height * 0.68 };
+        if (style.layoutPreset === "two-competitor-title-lower") titleBounds = { left: width * 0.22, top: height * 0.61, right: width * 0.78, bottom: height * 0.77 };
+        else if (style.layoutPreset === "three-competitor-title-center") titleBounds = { left: width * 0.3, top: height * 0.46, right: width * 0.7, bottom: height * 0.66 };
+        else if (style.layoutPreset === "single-competitor-title-side") titleBounds = { left: width * 0.5, top: height * 0.34, right: width * 0.94, bottom: height * 0.69 };
+        semantic.fullFrameAtmosphere = createRectangleFill(document, groups.atmosphere, "FULL FRAME ATMOSPHERE", { left: 0, top: 0, right: width, bottom: height }, style.secondaryColor, 18, "multiply");
+        semantic.lowerThirdPanel = createRectangleFill(document, groups.framesAndPanels, "LOWER THIRD PANEL", { left: 0, top: height * 0.77, right: width, bottom: height }, style.secondaryColor, 86, "normal");
+        semantic.titleBacking = createRectangleFill(document, groups.framesAndPanels, "TITLE BACKING", titleBounds, style.primaryColor, 76, "normal");
+        semantic.showLogoPlate = createRectangleFill(document, groups.framesAndPanels, "SHOW LOGO PLATE", { left: width * 0.36, top: height * 0.025, right: width * 0.64, bottom: height * 0.21 }, style.secondaryColor, 72, "normal");
+        semantic.lowerLightStrip = createRectangleFill(document, groups.finishingEffects, "LOWER LIGHT STRIP", { left: 0, top: height * 0.765, right: width, bottom: height * 0.775 }, style.accentColor, 92, "screen");
+        semantic.topBorder = createRectangleFill(document, groups.finishingEffects, "TOP BORDER", { left: 0, top: 0, right: width, bottom: Math.max(3, height * 0.009) }, style.metallicColor, 100, "normal");
+        semantic.bottomBorder = createRectangleFill(document, groups.finishingEffects, "BOTTOM BORDER", { left: 0, top: height - Math.max(3, height * 0.012), right: width, bottom: height }, style.metallicColor, 100, "normal");
+        semantic.finishingGlow = createRectangleFill(document, groups.finishingEffects, "FINISHING GLOW", { left: width * 0.24, top: height * 0.43, right: width * 0.76, bottom: height * 0.73 }, style.accentColor, 13, "screen");
+    }
+    function placeFileAsSmartObject(document, file, group, layerName) {
+        app.activeDocument = document;
+        var descriptor = new ActionDescriptor();
+        descriptor.putPath(charIDToTypeID("null"), file);
+        descriptor.putEnumerated(charIDToTypeID("FTcs"), charIDToTypeID("QCSt"), charIDToTypeID("Qcsa"));
+        executeAction(charIDToTypeID("Plc "), descriptor, DialogModes.NO);
+        var layer = document.activeLayer;
+        if (!isSmartObject(layer)) throw new Error("Photoshop did not place " + file.name + " as a Smart Object.");
+        layer.name = layerName;
+        layer.move(group, ElementPlacement.INSIDE);
+        document.activeLayer = layer;
+        return layer;
+    }
+    function defaultAssetBounds(role, width, height, layoutPreset) {
+        if (role === "templateBackground") return { left: 0, top: 0, right: width, bottom: height };
+        if (layoutPreset === "single-competitor-title-side" && role === "competitorCenter") return { left: width * 0.015, top: height * 0.1, right: width * 0.56, bottom: height * 0.99 };
+        if (layoutPreset === "three-competitor-title-center" && role === "competitorLeft") return { left: width * 0.005, top: height * 0.16, right: width * 0.4, bottom: height * 0.99 };
+        if (layoutPreset === "three-competitor-title-center" && role === "competitorCenter") return { left: width * 0.27, top: height * 0.08, right: width * 0.73, bottom: height * 0.99 };
+        if (layoutPreset === "three-competitor-title-center" && role === "competitorRight") return { left: width * 0.6, top: height * 0.16, right: width * 0.995, bottom: height * 0.99 };
+        if (role === "competitorLeft") return { left: width * 0.015, top: height * 0.12, right: width * 0.53, bottom: height * 0.98 };
+        if (role === "competitorRight") return { left: width * 0.47, top: height * 0.12, right: width * 0.985, bottom: height * 0.98 };
+        if (role === "competitorCenter") return { left: width * 0.24, top: height * 0.1, right: width * 0.76, bottom: height * 0.98 };
+        if (role === "showLogo" || role === "promotionLogo") return { left: width * 0.37, top: height * 0.04, right: width * 0.63, bottom: height * 0.2 };
+        if (role === "beltImage" || role === "championshipLogo") return { left: width * 0.34, top: height * 0.45, right: width * 0.66, bottom: height * 0.74 };
+        if (role === "venueLogo") return { left: width * 0.4, top: height * 0.82, right: width * 0.6, bottom: height * 0.96 };
+        if (role === "sponsorLogo") return { left: width * 0.78, top: height * 0.82, right: width * 0.96, bottom: height * 0.96 };
+        return { left: width * 0.18, top: height * 0.12, right: width * 0.82, bottom: height * 0.96 };
+    }
+    function applyLayerPlacement(document, layer, role, placement, defaultFitMode, layoutPreset) {
+        var width = toPixels(document.width), height = toPixels(document.height), target = defaultAssetBounds(role, width, height, layoutPreset);
+        var coordinateSpace = placement && own(placement, "coordinateSpace") ? placement.coordinateSpace : "normalized";
+        if (placement && own(placement, "maxWidth")) {
+            var maximumWidth = Number(placement.maxWidth) * (coordinateSpace === "normalized" ? width : 1);
+            var centerX = (target.left + target.right) / 2;
+            target.left = centerX - maximumWidth / 2; target.right = centerX + maximumWidth / 2;
+        }
+        if (placement && own(placement, "maxHeight")) {
+            var maximumHeight = Number(placement.maxHeight) * (coordinateSpace === "normalized" ? height : 1);
+            var centerY = (target.top + target.bottom) / 2;
+            target.top = centerY - maximumHeight / 2; target.bottom = centerY + maximumHeight / 2;
+        }
+        var currentBounds = safeTransformBounds(layer);
+        if (!currentBounds) throw new Error("Could not read placed bounds for " + role + ".");
+        var current = rect(currentBounds), targetRect = rect(target);
+        if (current.width <= 0 || current.height <= 0) throw new Error("Placed asset has empty bounds: " + role);
+        var fitMode = placement && own(placement, "fitMode") ? placement.fitMode : defaultFitMode;
+        if (fitMode !== "keep-transform") {
+            var ratio = fitMode === "cover" ? Math.max(targetRect.width / current.width, targetRect.height / current.height) : Math.min(targetRect.width / current.width, targetRect.height / current.height);
+            layer.resize(ratio * 100, ratio * 100, AnchorPosition.MIDDLECENTER);
+        }
+        if (placement && own(placement, "scale")) layer.resize(Number(placement.scale) * 100, Number(placement.scale) * 100, AnchorPosition.MIDDLECENTER);
+        var movedBounds = safeTransformBounds(layer), desiredX = targetRect.centerX, desiredY = targetRect.centerY;
+        if (!movedBounds) throw new Error("Could not read transformed bounds for " + role + ".");
+        if (fitMode === "keep-transform" && (!placement || !own(placement, "x"))) {
+            desiredX = current.centerX; desiredY = current.centerY;
+        }
+        if (placement && own(placement, "x")) {
+            desiredX = Number(placement.x) * (coordinateSpace === "normalized" ? width : 1);
+            desiredY = Number(placement.y) * (coordinateSpace === "normalized" ? height : 1);
+        }
+        layer.translate(UnitValue(desiredX - ((movedBounds.left + movedBounds.right) / 2), "px"), UnitValue(desiredY - ((movedBounds.top + movedBounds.bottom) / 2), "px"));
+        var targetDeltaX = desiredX - targetRect.centerX, targetDeltaY = desiredY - targetRect.centerY;
+        target.left += targetDeltaX; target.right += targetDeltaX; target.top += targetDeltaY; target.bottom += targetDeltaY;
+        return target;
+    }
+    function placementTargetBounds(document, role, placement, layoutPreset) {
+        var width = toPixels(document.width), height = toPixels(document.height), target = defaultAssetBounds(role, width, height, layoutPreset);
+        var coordinateSpace = placement && own(placement, "coordinateSpace") ? placement.coordinateSpace : "normalized";
+        if (placement && own(placement, "maxWidth")) {
+            var maximumWidth = Number(placement.maxWidth) * (coordinateSpace === "normalized" ? width : 1), centerX = (target.left + target.right) / 2;
+            target.left = centerX - maximumWidth / 2; target.right = centerX + maximumWidth / 2;
+        }
+        if (placement && own(placement, "maxHeight")) {
+            var maximumHeight = Number(placement.maxHeight) * (coordinateSpace === "normalized" ? height : 1), centerY = (target.top + target.bottom) / 2;
+            target.top = centerY - maximumHeight / 2; target.bottom = centerY + maximumHeight / 2;
+        }
+        if (placement && own(placement, "x")) {
+            var desiredX = Number(placement.x) * (coordinateSpace === "normalized" ? width : 1), desiredY = Number(placement.y) * (coordinateSpace === "normalized" ? height : 1);
+            var deltaX = desiredX - ((target.left + target.right) / 2), deltaY = desiredY - ((target.top + target.bottom) / 2);
+            target.left += deltaX; target.right += deltaX; target.top += deltaY; target.bottom += deltaY;
+        }
+        return target;
+    }
+    function addSelectionMask(document, layer, bounds) {
+        app.activeDocument = document; document.activeLayer = layer;
+        document.selection.select([
+            [UnitValue(bounds.left, "px"), UnitValue(bounds.top, "px")],
+            [UnitValue(bounds.right, "px"), UnitValue(bounds.top, "px")],
+            [UnitValue(bounds.right, "px"), UnitValue(bounds.bottom, "px")],
+            [UnitValue(bounds.left, "px"), UnitValue(bounds.bottom, "px")]
+        ]);
+        try {
+            var descriptor = new ActionDescriptor(), reference = new ActionReference();
+            descriptor.putClass(charIDToTypeID("Nw  "), charIDToTypeID("Chnl"));
+            reference.putEnumerated(charIDToTypeID("Chnl"), charIDToTypeID("Chnl"), charIDToTypeID("Msk "));
+            descriptor.putReference(charIDToTypeID("At  "), reference);
+            descriptor.putEnumerated(charIDToTypeID("Usng"), charIDToTypeID("UsrM"), charIDToTypeID("RvlS"));
+            executeAction(charIDToTypeID("Mk  "), descriptor, DialogModes.NO);
+        } finally {
+            try { document.selection.deselect(); } catch (_maskDeselectError) {}
+        }
+    }
+    function layerHasUserMask(layer) {
+        var layerId = safeLayerId(layer);
+        if (!layerId) throw new Error("Cannot inspect a layer mask without a numeric layer ID.");
+        var reference = new ActionReference();
+        reference.putIdentifier(charIDToTypeID("Lyr "), layerId);
+        var descriptor = executeActionGet(reference), key = stringIDToTypeID("hasUserMask");
+        return descriptor.hasKey(key) && descriptor.getBoolean(key);
+    }
+    function findLayersNamed(layers, name, matches) {
+        for (var i = 0; i < layers.length; i++) {
+            if (layers[i].name === name) matches.push(layers[i]);
+            if (layers[i].typename === "LayerSet") findLayersNamed(layers[i].layers, name, matches);
+        }
+    }
+    function applyClippingPreference(document, layer, group, role, bounds, enabled, ownedBase) {
+        var baseName = MATCH_ASSET_LAYER_NAMES[role] + " - CLIPPING BASE", base = ownedBase || null, directMatches = [];
+        for (var directIndex = 0; directIndex < group.layers.length; directIndex++) if (group.layers[directIndex].name === baseName) directMatches.push(group.layers[directIndex]);
+        if (!base && directMatches.length) throw new Error("A same-named clipping base exists without manifest ownership for " + role + ".");
+        if (base) {
+            if (directMatches.length !== 1 || safeLayerId(directMatches[0]) !== safeLayerId(base)) throw new Error("The manifest-owned clipping base for " + role + " is no longer a unique direct child.");
+        }
+        if (enabled) {
+            if (!base && Boolean(layer.grouped)) throw new Error("The layer is clipped to an unowned base; refusing to replace an unrelated layer.");
+            // Rebuild only a manifest-owned vector base so it follows changed
+            // position/maximum bounds without touching unrelated layers.
+            try { layer.grouped = false; } catch (_temporaryUnclipError) {}
+            if (base) base.remove();
+            base = createRectangleFill(document, group, baseName, bounds, { red: 0, green: 0, blue: 0 }, 100, "normal");
+            base.move(layer, ElementPlacement.PLACEAFTER);
+            document.activeLayer = layer;
+            layer.grouped = true;
+            if (!layer.grouped) throw new Error("Photoshop did not retain the clipping mask for " + role + ".");
+        } else {
+            if (!base && Boolean(layer.grouped)) throw new Error("The layer is clipped to an unowned base; refusing to remove an unrelated clipping relationship.");
+            try { layer.grouped = false; } catch (_unclipError) {}
+            if (base) base.remove();
+            base = null;
+        }
+        return base;
+    }
+    function deleteActiveUserMask(document, layer) {
+        app.activeDocument = document; document.activeLayer = layer;
+        var descriptor = new ActionDescriptor(), reference = new ActionReference();
+        reference.putEnumerated(charIDToTypeID("Chnl"), charIDToTypeID("Chnl"), charIDToTypeID("Msk "));
+        descriptor.putReference(charIDToTypeID("null"), reference);
+        executeAction(charIDToTypeID("Dlt "), descriptor, DialogModes.NO);
+    }
+    function applyNonGenerativeMaskPreference(document, layer, bounds, enabled, role, previouslyOwned, rebuildOwned) {
+        var hasMask = layerHasUserMask(layer);
+        if (enabled && !hasMask) addSelectionMask(document, layer, bounds);
+        else if (enabled && hasMask && previouslyOwned && rebuildOwned) { deleteActiveUserMask(document, layer); addSelectionMask(document, layer, bounds); }
+        else if (enabled && hasMask && !previouslyOwned) throw new Error("The existing mask for " + role + " is not manifest-owned; refusing to claim or replace it.");
+        else if (!enabled && hasMask) {
+            if (!previouslyOwned) throw new Error("Refusing to remove an unowned layer mask for " + role + ".");
+            deleteActiveUserMask(document, layer);
+        }
+    }
+    function setLayerEffectsForPlacement(document, layer, placement, accentColor) {
+        if (!placement || (!own(placement, "dropShadow") && !own(placement, "outerGlow"))) return;
+        app.activeDocument = document; document.activeLayer = layer;
+        var effects = readPreservableLayerEffects();
+        if (own(placement, "dropShadow") && placement.dropShadow) {
+            var shadow = new ActionDescriptor(), black = new ActionDescriptor();
+            shadow.putBoolean(charIDToTypeID("enab"), true);
+            shadow.putEnumerated(charIDToTypeID("Md  "), charIDToTypeID("BlnM"), charIDToTypeID("Mltp"));
+            shadow.putUnitDouble(charIDToTypeID("Opct"), charIDToTypeID("#Prc"), 55);
+            shadow.putUnitDouble(charIDToTypeID("Dstn"), charIDToTypeID("#Pxl"), 18);
+            shadow.putUnitDouble(charIDToTypeID("blur"), charIDToTypeID("#Pxl"), 28);
+            black.putDouble(charIDToTypeID("Rd  "), 0); black.putDouble(charIDToTypeID("Grn "), 0); black.putDouble(charIDToTypeID("Bl  "), 0);
+            shadow.putObject(charIDToTypeID("Clr "), charIDToTypeID("RGBC"), black);
+            effects.putObject(stringIDToTypeID("dropShadow"), stringIDToTypeID("dropShadow"), shadow);
+        } else if (own(placement, "dropShadow") && effects.hasKey(stringIDToTypeID("dropShadow"))) effects.erase(stringIDToTypeID("dropShadow"));
+        if (own(placement, "outerGlow") && placement.outerGlow) {
+            var glow = new ActionDescriptor(), glowColor = new ActionDescriptor();
+            glow.putBoolean(charIDToTypeID("enab"), true);
+            glow.putEnumerated(charIDToTypeID("Md  "), charIDToTypeID("BlnM"), charIDToTypeID("Scrn"));
+            glow.putUnitDouble(charIDToTypeID("Opct"), charIDToTypeID("#Prc"), 55);
+            glow.putUnitDouble(charIDToTypeID("blur"), charIDToTypeID("#Pxl"), 24);
+            glowColor.putDouble(charIDToTypeID("Rd  "), accentColor.red); glowColor.putDouble(charIDToTypeID("Grn "), accentColor.green); glowColor.putDouble(charIDToTypeID("Bl  "), accentColor.blue);
+            glow.putObject(charIDToTypeID("Clr "), charIDToTypeID("RGBC"), glowColor);
+            effects.putObject(stringIDToTypeID("outerGlow"), stringIDToTypeID("outerGlow"), glow);
+        } else if (own(placement, "outerGlow") && effects.hasKey(stringIDToTypeID("outerGlow"))) effects.erase(stringIDToTypeID("outerGlow"));
+        var effectsScale = stringIDToTypeID("scale");
+        if (!effects.hasKey(effectsScale)) effects.putUnitDouble(effectsScale, charIDToTypeID("#Prc"), 100);
+        var setDescriptor = new ActionDescriptor(), setReference = new ActionReference();
+        setReference.putProperty(charIDToTypeID("Prpr"), stringIDToTypeID("layerEffects"));
+        setReference.putEnumerated(charIDToTypeID("Lyr "), charIDToTypeID("Ordn"), charIDToTypeID("Trgt"));
+        setDescriptor.putReference(charIDToTypeID("null"), setReference);
+        setDescriptor.putObject(charIDToTypeID("T   "), stringIDToTypeID("layerEffects"), effects);
+        executeAction(charIDToTypeID("setd"), setDescriptor, DialogModes.NO);
+    }
+    function placeMatchAsset(document, folder, role, fileName, groups, placement, accentColor, layoutPreset, semanticReferences) {
+        var file = childFile(folder, fileName);
+        if (!file.exists) throw new Error("Missing required asset: " + fileName);
+        var group = groupForAssetRole(groups, role), layer = placeFileAsSmartObject(document, file, group, MATCH_ASSET_LAYER_NAMES[role]);
+        var targetBounds = applyLayerPlacement(document, layer, role, placement || null, "contain", layoutPreset);
+        if (placement && own(placement, "clippingMask")) {
+            try {
+                var createdBase = applyClippingPreference(document, layer, group, role, targetBounds, placement.clippingMask, null);
+                if (createdBase && semanticReferences) semanticReferences[role + "ClippingBase"] = createdBase;
+            } catch (error) { throw new Error("Could not apply clipping mask for " + role + ": " + error.message); }
+        }
+        if (placement && own(placement, "nonGenerativeMask")) applyNonGenerativeMaskPreference(document, layer, targetBounds, placement.nonGenerativeMask, role, false, false);
+        setLayerEffectsForPlacement(document, layer, placement || null, accentColor);
+        return layer;
+    }
+    function installedFonts() {
+        var result = [], seen = {};
+        try {
+            for (var i = 0; i < app.fonts.length; i++) {
+                var postScriptName = "", displayName = "";
+                try { postScriptName = String(app.fonts[i].postScriptName); } catch (_postScriptNameError) {}
+                try { displayName = String(app.fonts[i].name); } catch (_fontDisplayNameError) {}
+                if (postScriptName && !seen[postScriptName.toLowerCase()]) {
+                    seen[postScriptName.toLowerCase()] = true;
+                    result.push({ postScriptName: postScriptName, displayName: displayName });
+                }
+            }
+        } catch (_fontEnumerationError) {}
+        return result;
+    }
+    function resolveMatchFont(requested, role, fonts, warnings) {
+        var i, wanted = requested ? String(requested).toLowerCase() : "";
+        if (wanted) {
+            for (i = 0; i < fonts.length; i++) {
+                if (fonts[i].postScriptName.toLowerCase() === wanted || fonts[i].displayName.toLowerCase() === wanted) return fonts[i].postScriptName;
+            }
+            warnings.push('Requested font "' + requested + '" for ' + role + " is unavailable; a local fallback was used.");
+        }
+        var candidates = ["Arial-BoldMT", "ArialMT", "Helvetica-Bold", "Helvetica", "MyriadPro-Bold", "MyriadPro-Regular"];
+        for (var c = 0; c < candidates.length; c++) for (i = 0; i < fonts.length; i++) if (fonts[i].postScriptName.toLowerCase() === candidates[c].toLowerCase()) return fonts[i].postScriptName;
+        return fonts.length ? fonts[0].postScriptName : null;
+    }
+    function fontRoleForText(role) {
+        if (role === "matchTitle") return "mainTitle";
+        if (role === "championship") return "championshipLabel";
+        if (role === "competitorLeftName" || role === "competitorRightName" || role === "competitorCenterName") return "competitorNames";
+        return role;
+    }
+    function textPositionAndSize(role, width, height, layoutPreset) {
+        if (layoutPreset === "single-competitor-title-side" && (role === "championship" || role === "matchTitle" || role === "stipulation")) {
+            if (role === "championship") return { x: width * 0.72, y: height * 0.36, size: height * 0.028, center: true };
+            if (role === "matchTitle") return { x: width * 0.72, y: height * 0.51, size: height * 0.065, center: true };
+            return { x: width * 0.72, y: height * 0.67, size: height * 0.03, center: true };
+        }
+        if (layoutPreset === "two-competitor-title-lower" && (role === "championship" || role === "matchTitle" || role === "stipulation")) {
+            if (role === "championship") return { x: width * 0.5, y: height * 0.59, size: height * 0.028, center: true };
+            if (role === "matchTitle") return { x: width * 0.5, y: height * 0.69, size: height * 0.064, center: true };
+            return { x: width * 0.5, y: height * 0.77, size: height * 0.026, center: true };
+        }
+        if (layoutPreset === "three-competitor-title-center" && (role === "championship" || role === "matchTitle" || role === "stipulation")) {
+            if (role === "championship") return { x: width * 0.5, y: height * 0.43, size: height * 0.026, center: true };
+            if (role === "matchTitle") return { x: width * 0.5, y: height * 0.55, size: height * 0.062, center: true };
+            return { x: width * 0.5, y: height * 0.68, size: height * 0.026, center: true };
+        }
+        if (role === "championship") return { x: width * 0.5, y: height * 0.45, size: height * 0.031, center: true };
+        if (role === "matchTitle") return { x: width * 0.5, y: height * 0.59, size: height * 0.078, center: true };
+        if (role === "stipulation") return { x: width * 0.5, y: height * 0.72, size: height * 0.032, center: true };
+        if (role === "competitorLeftName") return { x: width * 0.24, y: height * 0.75, size: height * 0.047, center: true };
+        if (role === "competitorRightName") return { x: width * 0.76, y: height * 0.75, size: height * 0.047, center: true };
+        if (role === "competitorCenterName") return { x: width * 0.5, y: height * 0.75, size: height * 0.047, center: true };
+        if (role === "date") return { x: width * 0.5, y: height * 0.84, size: height * 0.026, center: true };
+        if (role === "time") return { x: width * 0.5, y: height * 0.89, size: height * 0.023, center: true };
+        return { x: width * 0.5, y: height * 0.95, size: height * 0.019, center: true };
+    }
+    function createEditableMatchText(document, group, role, contents, style, fontList, warnings) {
+        app.activeDocument = document;
+        var layer = document.artLayers.add();
+        layer.kind = LayerKind.TEXT;
+        layer.name = MATCH_TEXT_LAYER_NAMES[role];
+        var textItem = layer.textItem, geometry = textPositionAndSize(role, toPixels(document.width), toPixels(document.height), style.layoutPreset);
+        textItem.contents = normalizeTextForPhotoshop(contents);
+        textItem.position = [UnitValue(geometry.x, "px"), UnitValue(geometry.y, "px")];
+        textItem.size = UnitValue(Math.max(8, geometry.size * 72 / Number(document.resolution)), "pt");
+        if (geometry.center) textItem.justification = Justification.CENTER;
+        var fontRole = fontRoleForText(role), requested = style.fonts && own(style.fonts, fontRole) ? style.fonts[fontRole] : null;
+        var font = resolveMatchFont(requested, fontRole, fontList, warnings);
+        if (font) {
+            try { textItem.font = font; } catch (fontError) { warnings.push("Photoshop could not apply font " + font + " to " + role + ": " + fontError.message); }
+        } else warnings.push("No installed Photoshop font could be selected for " + role + ".");
+        var color = new SolidColor(), rgb = role === "championship" ? style.metallicColor : style.accentColor;
+        color.rgb.red = rgb.red; color.rgb.green = rgb.green; color.rgb.blue = rgb.blue;
+        textItem.color = color;
+        layer.move(group, ElementPlacement.INSIDE);
+        document.activeLayer = layer;
+        return layer;
+    }
+    function importBaleCcGroup(input, targetDocument) {
+        var baleCc = configuredBaleCc(input, true), folder = matchWorkingFolder(input), packageFile = childFile(folder, baleCc.packageFileName);
+        if (!packageFile.exists) throw new Error("Missing Bale CC package: " + baleCc.packageFileName);
+        var previous = currentDocumentOrNull(), packageDocument = null, ownedDocument = false, imported = null, wrapper = null, previousDialogs = null;
+        try { previousDialogs = app.displayDialogs; app.displayDialogs = DialogModes.NO; } catch (_importDialogReadError) {}
+        try {
+            packageDocument = findOpenDocumentForFile(packageFile);
+            if (!packageDocument) { packageDocument = app.open(packageFile); ownedDocument = true; }
+            else if (!packageDocument.saved) throw new Error("The Bale CC package is already open with unsaved changes; save or close it before running this job.");
+            var matches = [];
+            findNamedGroups(packageDocument.layers, baleCc.groupName, matches);
+            if (matches.length !== 1) throw new Error('Expected exactly one Bale CC group named "' + baleCc.groupName + '"; found ' + matches.length + ".");
+            app.activeDocument = targetDocument;
+            wrapper = targetDocument.layerSets.add();
+            wrapper.name = "00 - BALE CC";
+            try { wrapper.blendMode = BlendMode.PASSTHROUGH; } catch (_balePassThroughError) {}
+            imported = matches[0].duplicate(targetDocument, ElementPlacement.PLACEATBEGINNING);
+            imported.move(wrapper, ElementPlacement.INSIDE);
+            imported.name = baleCc.groupName;
+            return { wrapper: wrapper, sourceGroup: imported };
+        } finally {
+            if (ownedDocument && packageDocument) try { packageDocument.close(SaveOptions.DONOTSAVECHANGES); } catch (_importPackageCloseError) {}
+            if (previousDialogs !== null) try { app.displayDialogs = previousDialogs; } catch (_importDialogRestoreError) {}
+            if (!imported) restoreActiveDocument(previous);
+            else try { app.activeDocument = targetDocument; } catch (_activateTargetAfterBaleError) {}
+        }
+    }
+    function importBaleCcSourceIntoWrapper(input, targetDocument, wrapper) {
+        var baleCc = configuredBaleCc(input, true), folder = matchWorkingFolder(input), packageFile = childFile(folder, baleCc.packageFileName);
+        if (!packageFile.exists) throw new Error("Missing Bale CC package: " + baleCc.packageFileName);
+        var previous = currentDocumentOrNull(), packageDocument = null, ownedDocument = false, imported = null, previousDialogs = null;
+        try { previousDialogs = app.displayDialogs; app.displayDialogs = DialogModes.NO; } catch (_repairBaleDialogReadError) {}
+        try {
+            packageDocument = findOpenDocumentForFile(packageFile);
+            if (!packageDocument) { packageDocument = app.open(packageFile); ownedDocument = true; }
+            else if (!packageDocument.saved) throw new Error("The Bale CC package is already open with unsaved changes; save or close it before running this job.");
+            var matches = [];
+            findNamedGroups(packageDocument.layers, baleCc.groupName, matches);
+            if (matches.length !== 1) throw new Error('Expected exactly one Bale CC group named "' + baleCc.groupName + '"; found ' + matches.length + ".");
+            imported = matches[0].duplicate(targetDocument, ElementPlacement.PLACEATBEGINNING);
+            app.activeDocument = targetDocument;
+            imported.move(wrapper, ElementPlacement.INSIDE);
+            imported.name = baleCc.groupName;
+            return imported;
+        } finally {
+            if (ownedDocument && packageDocument) try { packageDocument.close(SaveOptions.DONOTSAVECHANGES); } catch (_repairBalePackageCloseError) {}
+            if (previousDialogs !== null) try { app.displayDialogs = previousDialogs; } catch (_repairBaleDialogRestoreError) {}
+            if (!imported) restoreActiveDocument(previous);
+            else try { app.activeDocument = targetDocument; } catch (_repairBaleActivateError) {}
+        }
+    }
+    function resolveOptionalLayerByManifestEntry(document, role, entry) {
+        var matches = [], wantedId = Number(entry.id);
+        findLayerRecursive(document.layers, function (layer) { return safeLayerId(layer) === wantedId; }, [], matches);
+        if (!matches.length) return null;
+        if (matches.length !== 1) throw new Error("Manifest semantic role " + role + " resolves to more than one layer ID.");
+        if (matches[0].layer.name !== entry.name || matches[0].layer.typename !== entry.typename || safeLayerKind(matches[0].layer) !== entry.kind) throw new Error("Manifest semantic role " + role + " no longer matches its recorded layer metadata.");
+        return matches[0];
+    }
+    function resolveLayerByManifestEntry(document, role, entry) {
+        var resolved = resolveOptionalLayerByManifestEntry(document, role, entry);
+        if (!resolved) throw new Error("Manifest semantic role " + role + " does not resolve to a layer ID.");
+        return resolved;
+    }
+    function verifyDuplicatedSemanticLayer(layer, role, entry) {
+        if (!layer || layer.name !== entry.name || layer.typename !== entry.typename || safeLayerKind(layer) !== entry.kind) throw new Error("Duplicated semantic role " + role + " no longer matches the manifest metadata.");
+    }
+    function semanticLayerEntry(document, layer) {
+        var layerId = safeLayerId(layer), matches = [];
+        if (!layerId) throw new Error("A semantic layer has no readable numeric ID: " + layer.name);
+        findLayerRecursive(document.layers, function (candidate) { return safeLayerId(candidate) === layerId; }, [], matches);
+        if (matches.length !== 1) throw new Error("Could not determine a unique index path for semantic layer: " + layer.name);
+        return { id: layerId, name: layer.name, typename: layer.typename, kind: safeLayerKind(layer), indexPath: matches[0].indexPath };
+    }
+    function captureSemanticLayers(document, references) {
+        var result = {};
+        for (var role in references) if (own(references, role) && references[role]) result[role] = semanticLayerEntry(document, references[role]);
+        return result;
+    }
+    function utcTimestamp() {
+        var date = new Date();
+        function pad(value, width) { var text = String(value); while (text.length < width) text = "0" + text; return text; }
+        return date.getUTCFullYear() + "-" + pad(date.getUTCMonth() + 1, 2) + "-" + pad(date.getUTCDate(), 2) + "T" + pad(date.getUTCHours(), 2) + ":" + pad(date.getUTCMinutes(), 2) + ":" + pad(date.getUTCSeconds(), 2) + "." + pad(date.getUTCMilliseconds(), 3) + "Z";
+    }
+    function cloneJsonValue(value) {
+        if (value === null || typeof value !== "object") return value;
+        var result, i, key;
+        if (value instanceof Array) {
+            result = [];
+            for (i = 0; i < value.length; i++) result.push(cloneJsonValue(value[i]));
+            return result;
+        }
+        result = {};
+        for (key in value) if (own(value, key)) result[key] = cloneJsonValue(value[key]);
+        return result;
+    }
+    function mergeOwn(target, changes) {
+        if (!changes) return target;
+        for (var key in changes) if (own(changes, key)) target[key] = cloneJsonValue(changes[key]);
+        return target;
+    }
+    function mergePlacementMap(target, changes) {
+        if (!changes) return target;
+        var roles = ownKeys(changes);
+        for (var i = 0; i < roles.length; i++) {
+            if (!own(target, roles[i])) target[roles[i]] = {};
+            mergeOwn(target[roles[i]], changes[roles[i]]);
+        }
+        return target;
+    }
+    function mergedPlacement(previousPlacement, changes) {
+        var result = previousPlacement ? cloneJsonValue(previousPlacement) : {};
+        return mergeOwn(result, changes || {});
+    }
+    function themeColorsFromStyle(style) {
+        return {
+            primaryColor: cloneJsonValue(style.primaryColor),
+            secondaryColor: cloneJsonValue(style.secondaryColor),
+            accentColor: cloneJsonValue(style.accentColor),
+            metallicColor: cloneJsonValue(style.metallicColor)
+        };
+    }
+    function matchSemanticRoles() {
+        var roles = [
+            "baleCc", "baleCcSourceGroup", "templateBackgroundLayer", "templateBackground", "atmosphere",
+            "framesAndPanels", "competitorRenders", "championshipAndBelt", "matchTitleGroup",
+            "eventInformation", "showLogoGroup", "finishingEffects", "fullFrameAtmosphere",
+            "lowerThirdPanel", "titleBacking", "showLogoPlate", "lowerLightStrip", "topBorder",
+            "bottomBorder", "finishingGlow"
+        ];
+        var i;
+        for (i = 0; i < MATCH_ASSET_ROLES.length; i++) {
+            roles.push(MATCH_ASSET_ROLES[i]);
+            roles.push(MATCH_ASSET_ROLES[i] + "ClippingBase");
+        }
+        for (i = 0; i < MATCH_TEXT_ROLES.length; i++) roles.push(MATCH_TEXT_ROLES[i]);
+        return roles;
+    }
+    function validateSemanticManifestEntry(entry, label) {
+        assertAllowedKeys(requirePlainObject(entry, label), ["id", "name", "typename", "kind", "indexPath"], label);
+        var id = Number(entry.id);
+        if (!isFinite(id) || id <= 0 || Math.floor(id) !== id) throw new Error(label + ".id must be a positive integer.");
+        requireString(entry.name, label + ".name", 1, 255, false);
+        requireString(entry.typename, label + ".typename", 1, 100, false);
+        if (!own(entry, "kind") || typeof entry.kind !== "string") throw new Error(label + ".kind must be a string.");
+        requireString(entry.kind, label + ".kind", 1, 100, false);
+        if (!(entry.indexPath instanceof Array) || entry.indexPath.length < 1 || entry.indexPath.length > 50) throw new Error(label + ".indexPath is invalid.");
+        for (var i = 0; i < entry.indexPath.length; i++) {
+            var index = Number(entry.indexPath[i]);
+            if (!isFinite(index) || index < 0 || Math.floor(index) !== index) throw new Error(label + ".indexPath contains an invalid index.");
+        }
+    }
+    function validateManifestPlacements(value) {
+        assertAllowedKeys(requirePlainObject(value, "manifest placements"), MATCH_ASSET_ROLES, "manifest placements");
+        var keys = ownKeys(value);
+        for (var i = 0; i < keys.length; i++) validatePlacement(value[keys[i]], "manifest placements." + keys[i]);
+    }
+    function validateMatchCardManifest(manifest) {
+        var allowed = [
+            "schemaVersion", "outputPsdName", "outputPreviewName", "outputManifestName",
+            "templateBackground", "briefName", "layoutPreset", "canvas", "styleDescription",
+            "themeColors", "styleFonts", "baleCc", "semanticLayers", "assets", "text",
+            "placements", "createdAt", "updatedAt", "parentManifestName", "warnings"
+        ];
+        assertAllowedKeys(requirePlainObject(manifest, "match-card manifest"), allowed, "match-card manifest");
+        if (Number(manifest.schemaVersion) !== 1) throw new Error("Unsupported match-card manifest schemaVersion.");
+        validateMatchFileName(manifest.outputPsdName, [".psd"], "manifest outputPsdName");
+        validateMatchFileName(manifest.outputPreviewName, [".png"], "manifest outputPreviewName");
+        validateMatchFileName(manifest.outputManifestName, [".matchcard.json"], "manifest outputManifestName");
+        validateTemplateBackground(manifest.templateBackground);
+        requireString(manifest.briefName, "manifest briefName", 1, 200, false);
+        if (!valueInList(manifest.layoutPreset, MATCH_LAYOUT_PRESETS)) throw new Error("Manifest layoutPreset is unsupported.");
+        validateCanvas(manifest.canvas);
+        requireString(manifest.styleDescription, "manifest styleDescription", 1, 500, false);
+        assertAllowedKeys(requirePlainObject(manifest.themeColors, "manifest themeColors"), ["primaryColor", "secondaryColor", "accentColor", "metallicColor"], "manifest themeColors");
+        validateRgb(manifest.themeColors.primaryColor, "manifest themeColors.primaryColor");
+        validateRgb(manifest.themeColors.secondaryColor, "manifest themeColors.secondaryColor");
+        validateRgb(manifest.themeColors.accentColor, "manifest themeColors.accentColor");
+        validateRgb(manifest.themeColors.metallicColor, "manifest themeColors.metallicColor");
+        if (own(manifest, "styleFonts")) {
+            assertAllowedKeys(requirePlainObject(manifest.styleFonts, "manifest styleFonts"), MATCH_FONT_ROLES, "manifest styleFonts");
+            var fontKeys = ownKeys(manifest.styleFonts);
+            for (var fontIndex = 0; fontIndex < fontKeys.length; fontIndex++) requireString(manifest.styleFonts[fontKeys[fontIndex]], "manifest styleFonts." + fontKeys[fontIndex], 1, 100, false);
+        }
+        assertAllowedKeys(requirePlainObject(manifest.baleCc, "manifest baleCc"), ["packageFileName", "groupName"], "manifest baleCc");
+        validateMatchFileName(manifest.baleCc.packageFileName, [".psd"], "manifest Bale CC packageFileName");
+        requireString(manifest.baleCc.groupName, "manifest Bale CC groupName", 1, 255, false);
+        validateAssetMap(manifest.assets, "manifest assets", false);
+        validateTextMap(manifest.text, "manifest text");
+        validateManifestPlacements(manifest.placements);
+        assertAllowedKeys(requirePlainObject(manifest.semanticLayers, "manifest semanticLayers"), matchSemanticRoles(), "manifest semanticLayers");
+        var semanticKeys = ownKeys(manifest.semanticLayers), seenSemanticIds = {}, seenSemanticPaths = {};
+        if (!own(manifest.semanticLayers, "baleCc") || !own(manifest.semanticLayers, "baleCcSourceGroup") || !own(manifest.semanticLayers, "templateBackgroundLayer")) throw new Error("Manifest is missing mandatory Bale CC or template-background semantic roles.");
+        for (var semanticIndex = 0; semanticIndex < semanticKeys.length; semanticIndex++) {
+            var semanticRole = semanticKeys[semanticIndex], semanticEntry = manifest.semanticLayers[semanticRole];
+            validateSemanticManifestEntry(semanticEntry, "manifest semanticLayers." + semanticRole);
+            var semanticIdKey = String(Number(semanticEntry.id)), semanticPathKey = semanticEntry.indexPath.join("/");
+            if (own(seenSemanticIds, semanticIdKey)) throw new Error("Manifest semantic roles " + seenSemanticIds[semanticIdKey] + " and " + semanticRole + " share one layer ID.");
+            if (own(seenSemanticPaths, semanticPathKey)) throw new Error("Manifest semantic roles " + seenSemanticPaths[semanticPathKey] + " and " + semanticRole + " share one index path.");
+            seenSemanticIds[semanticIdKey] = semanticRole;
+            seenSemanticPaths[semanticPathKey] = semanticRole;
+        }
+        requireString(manifest.createdAt, "manifest createdAt", 1, 60, false);
+        if (own(manifest, "updatedAt") && manifest.updatedAt !== null) requireString(manifest.updatedAt, "manifest updatedAt", 1, 60, false);
+        if (own(manifest, "parentManifestName") && manifest.parentManifestName !== null) validateMatchFileName(manifest.parentManifestName, [".matchcard.json"], "manifest parentManifestName");
+        if (!(manifest.warnings instanceof Array) || manifest.warnings.length > 100) throw new Error("Manifest warnings must be an array of at most 100 strings.");
+        for (var warningIndex = 0; warningIndex < manifest.warnings.length; warningIndex++) requireString(manifest.warnings[warningIndex], "manifest warning", 0, 1000, true);
+        return manifest;
+    }
+    function writeMatchCardManifest(file, manifest) {
+        if (file.exists) throw new Error("Manifest output already exists: " + file.name);
+        writeUtf8(file.fsName, stringify(manifest));
+        if (!file.exists) throw new Error("Photoshop worker did not create the match-card manifest.");
+    }
+    function buildCreateManifest(input, payload, semanticLayers, warnings) {
+        var baleCc = configuredBaleCc(input, true);
+        return {
+            schemaVersion: 1,
+            outputPsdName: payload.outputPsdName,
+            outputPreviewName: payload.outputPreviewName,
+            outputManifestName: payload.outputManifestName,
+            templateBackground: cloneJsonValue(payload.templateBackground),
+            briefName: payload.briefName,
+            layoutPreset: payload.style.layoutPreset,
+            canvas: cloneJsonValue(payload.canvas),
+            styleDescription: payload.style.description,
+            themeColors: themeColorsFromStyle(payload.style),
+            styleFonts: payload.style.fonts ? cloneJsonValue(payload.style.fonts) : {},
+            baleCc: { packageFileName: baleCc.packageFileName, groupName: baleCc.groupName },
+            semanticLayers: semanticLayers,
+            assets: cloneJsonValue(payload.assets),
+            text: cloneJsonValue(payload.text),
+            placements: payload.placements ? cloneJsonValue(payload.placements) : {},
+            createdAt: utcTimestamp(),
+            updatedAt: null,
+            parentManifestName: null,
+            warnings: warnings.slice(0)
+        };
+    }
+    function assertCreatePreflightReady(preflight) {
+        var reasons = [];
+        if (preflight.missingFiles.length) reasons.push("Missing files: " + preflight.missingFiles.join(", "));
+        if (preflight.existingOutputs.length) reasons.push("Existing outputs: " + preflight.existingOutputs.join(", "));
+        if (!preflight.baleCc.available) reasons.push(preflight.baleCc.issue || "Bale CC is unavailable.");
+        if (reasons.length) throw new Error(reasons.join(" "));
+    }
+    function createMatchCard(input) {
+        var payload = validateCreateMatchCardPayload(input.payload || {}), folder = matchWorkingFolder(input);
+        configuredBaleCc(input, true);
+        var stage = "preflight", preflight = preflightCreateMatchCard(input, payload);
+        assertCreatePreflightReady(preflight);
+        var outputPsd = childFile(folder, payload.outputPsdName), outputPreview = childFile(folder, payload.outputPreviewName), outputManifest = childFile(folder, payload.outputManifestName);
+        var previous = currentDocumentOrNull(), document = null, previewDocument = null, attemptedOutputs = [], warnings = [];
+        var previousDialogs = null;
+        try { previousDialogs = app.displayDialogs; app.displayDialogs = DialogModes.NO; } catch (_createDialogReadError) {}
+        try {
+            stage = "create document";
+            document = app.documents.add(UnitValue(payload.canvas.width, "px"), UnitValue(payload.canvas.height, "px"), payload.canvas.resolution, payload.outputPsdName.replace(/\.psd$/i, ""), NewDocumentMode.RGB, DocumentFill.TRANSPARENT);
+            app.activeDocument = document;
+            var bootstrapLayer = document.layers.length === 1 && document.layers[0].typename === "ArtLayer" ? document.layers[0] : null;
+            var groups = createMatchCardGroups(document), semantic = {}, groupRole;
+            if (bootstrapLayer) bootstrapLayer.remove();
+            for (groupRole in groups) if (own(groups, groupRole)) semantic[groupRole] = groups[groupRole];
+
+            stage = "import Bale CC";
+            var importedBale = importBaleCcGroup(input, document);
+            semantic.baleCc = importedBale.wrapper;
+            semantic.baleCcSourceGroup = importedBale.sourceGroup;
+
+            stage = "place template background";
+            semantic.templateBackgroundLayer = placeFileAsSmartObject(document, childFile(folder, payload.templateBackground.fileName), groups.templateBackground, "GENERATED TEMPLATE BACKGROUND");
+            applyLayerPlacement(document, semantic.templateBackgroundLayer, "templateBackground", null, payload.templateBackground.fitMode, payload.style.layoutPreset);
+
+            stage = "create editable panels and finishing layers";
+            createProceduralMatchLayers(document, groups, payload.style, semantic);
+
+            stage = "place protected assets";
+            var assetKeys = ownKeys(payload.assets);
+            for (var assetIndex = 0; assetIndex < assetKeys.length; assetIndex++) {
+                var assetRole = assetKeys[assetIndex], placement = payload.placements && own(payload.placements, assetRole) ? payload.placements[assetRole] : null;
+                semantic[assetRole] = placeMatchAsset(document, folder, assetRole, payload.assets[assetRole], groups, placement, payload.style.accentColor, payload.style.layoutPreset, semantic);
+            }
+
+            stage = "create editable text";
+            var fontList = installedFonts(), textKeys = ownKeys(payload.text);
+            for (var textIndex = 0; textIndex < textKeys.length; textIndex++) {
+                var textRole = textKeys[textIndex];
+                var textGroup = textRole === "date" || textRole === "time" || textRole === "venue" ? groups.eventInformation : (textRole === "championship" ? groups.championshipAndBelt : groups.matchTitleGroup);
+                semantic[textRole] = createEditableMatchText(document, textGroup, textRole, payload.text[textRole], payload.style, fontList, warnings);
+            }
+
+            stage = "save layered PSD";
+            if (outputPsd.exists || outputPreview.exists || outputManifest.exists) throw new Error("An output appeared while the job was running; no output was overwritten.");
+            attemptedOutputs.push(outputPsd);
+            var psdOptions = new PhotoshopSaveOptions();
+            psdOptions.layers = true; psdOptions.embedColorProfile = true; psdOptions.alphaChannels = true; psdOptions.annotations = true; psdOptions.spotColors = true;
+            document.saveAs(outputPsd, psdOptions, false, Extension.LOWERCASE);
+
+            stage = "export flattened PNG";
+            if (outputPreview.exists) throw new Error("The PNG output appeared while the job was running; it was not overwritten.");
+            attemptedOutputs.push(outputPreview);
+            previewDocument = document.duplicate(payload.outputPreviewName.replace(/\.png$/i, "_preview"), true);
+            app.activeDocument = previewDocument; previewDocument.flatten(); savePng(previewDocument, outputPreview);
+            previewDocument.close(SaveOptions.DONOTSAVECHANGES); previewDocument = null; app.activeDocument = document;
+
+            stage = "write match-card manifest";
+            var semanticLayers = captureSemanticLayers(document, semantic);
+            var manifest = buildCreateManifest(input, payload, semanticLayers, warnings);
+            validateMatchCardManifest(manifest);
+            attemptedOutputs.push(outputManifest);
+            writeMatchCardManifest(outputManifest, manifest);
+
+            if (previousDialogs !== null) try { app.displayDialogs = previousDialogs; } catch (_createDialogRestoreSuccessError) {}
+            return {
+                outputPsdName: payload.outputPsdName,
+                outputPreviewName: payload.outputPreviewName,
+                outputManifestName: payload.outputManifestName,
+                outputDocumentOpen: document.name,
+                baleCcImported: true,
+                protectedAssetsPlacedAsSmartObjects: true,
+                originalAssetsPreserved: true,
+                warnings: warnings
+            };
+        } catch (error) {
+            if (previewDocument) try { previewDocument.close(SaveOptions.DONOTSAVECHANGES); } catch (_createPreviewCloseError) {}
+            if (document) try { document.close(SaveOptions.DONOTSAVECHANGES); } catch (_createDocumentCloseError) {}
+            restoreActiveDocument(previous);
+            var cleanupFailures = [];
+            cleanupAttemptedOutputs(attemptedOutputs, cleanupFailures);
+            if (previousDialogs !== null) try { app.displayDialogs = previousDialogs; } catch (_createDialogRestoreError) {}
+            var suffix = cleanupFailures.length ? " Cleanup error: " + cleanupFailures.join("; ") + "." : "";
+            throw new Error("createMatchCard stage \"" + stage + "\" failed: " + error.message + suffix);
+        }
+    }
+    function readValidatedMatchCardManifest(file) {
+        if (!file.exists) throw new Error("Match-card manifest not found: " + file.name);
+        if (Number(file.length) > 2000000) throw new Error("Match-card manifest exceeds the 2 MB safety limit.");
+        var text = readUtf8(file.fsName);
+        return validateMatchCardManifest(parseJson(text));
+    }
+    function updateSolidFillSemantic(document, references, role, color) {
+        if (!references[role]) throw new Error("Manifest is missing required editable color role: " + role);
+        app.activeDocument = document; document.activeLayer = references[role];
+        try { setActiveSolidFillColor(color); } catch (error) { throw new Error("Could not update editable fill " + role + ": " + error.message); }
+    }
+    function applyThemeChanges(document, references, styleChanges, themeColors) {
+        if (!styleChanges) return;
+        if (own(styleChanges, "primaryColor")) updateSolidFillSemantic(document, references, "titleBacking", themeColors.primaryColor);
+        if (own(styleChanges, "secondaryColor")) {
+            updateSolidFillSemantic(document, references, "fullFrameAtmosphere", themeColors.secondaryColor);
+            updateSolidFillSemantic(document, references, "lowerThirdPanel", themeColors.secondaryColor);
+            updateSolidFillSemantic(document, references, "showLogoPlate", themeColors.secondaryColor);
+        }
+        if (own(styleChanges, "accentColor")) {
+            updateSolidFillSemantic(document, references, "lowerLightStrip", themeColors.accentColor);
+            updateSolidFillSemantic(document, references, "finishingGlow", themeColors.accentColor);
+        }
+        if (own(styleChanges, "metallicColor")) {
+            updateSolidFillSemantic(document, references, "topBorder", themeColors.metallicColor);
+            updateSolidFillSemantic(document, references, "bottomBorder", themeColors.metallicColor);
+        }
+        var textRoleIndex, textRole, textColor;
+        if (own(styleChanges, "accentColor")) {
+            textColor = new SolidColor(); textColor.rgb.red = themeColors.accentColor.red; textColor.rgb.green = themeColors.accentColor.green; textColor.rgb.blue = themeColors.accentColor.blue;
+            for (textRoleIndex = 0; textRoleIndex < MATCH_TEXT_ROLES.length; textRoleIndex++) {
+                textRole = MATCH_TEXT_ROLES[textRoleIndex];
+                if (textRole === "championship" || !references[textRole]) continue;
+                if (!isTextLayer(references[textRole])) throw new Error("Semantic text role is no longer editable: " + textRole);
+                references[textRole].textItem.color = textColor;
+            }
+        }
+        if (own(styleChanges, "metallicColor") && references.championship) {
+            textColor = new SolidColor(); textColor.rgb.red = themeColors.metallicColor.red; textColor.rgb.green = themeColors.metallicColor.green; textColor.rgb.blue = themeColors.metallicColor.blue;
+            if (!isTextLayer(references.championship)) throw new Error("Semantic championship role is no longer editable text.");
+            references.championship.textItem.color = textColor;
+        }
+    }
+    function applyRequestedFonts(document, references, styleFonts, requestedFonts, warnings) {
+        if (!requestedFonts) return;
+        var fonts = installedFonts();
+        for (var textRoleIndex = 0; textRoleIndex < MATCH_TEXT_ROLES.length; textRoleIndex++) {
+            var textRole = MATCH_TEXT_ROLES[textRoleIndex], fontRole = fontRoleForText(textRole);
+            if (!own(requestedFonts, fontRole) || !references[textRole]) continue;
+            var layer = references[textRole];
+            if (!isTextLayer(layer)) throw new Error("Semantic role " + textRole + " is no longer editable text.");
+            var font = resolveMatchFont(requestedFonts[fontRole], fontRole, fonts, warnings);
+            if (font) {
+                try { layer.textItem.font = font; } catch (error) { warnings.push("Photoshop could not apply font " + font + " to " + textRole + ": " + error.message); }
+            }
+        }
+        mergeOwn(styleFonts, requestedFonts);
+    }
+    function refreshRecordedOuterGlows(document, references, placements, accentColor) {
+        var roles = ownKeys(placements || {});
+        for (var i = 0; i < roles.length; i++) {
+            var role = roles[i];
+            if (placements[role].outerGlow === true && references[role]) setLayerEffectsForPlacement(document, references[role], { outerGlow: true }, accentColor);
+        }
+    }
+    function visibilityTarget(references, role) {
+        return references[role] || null;
+    }
+    function applyExistingAssetPlacement(document, references, groups, role, placementChanges, previousPlacement, accentColor, layoutPreset) {
+        var layer = references[role], effective = mergedPlacement(previousPlacement, placementChanges);
+        var geometryFields = ["coordinateSpace", "x", "y", "fitMode", "scale", "maxWidth", "maxHeight"], geometryChanged = false;
+        for (var geometryIndex = 0; geometryIndex < geometryFields.length; geometryIndex++) if (own(placementChanges, geometryFields[geometryIndex])) geometryChanged = true;
+        var priorNonGenerativeMaskOwned = previousPlacement && previousPlacement.nonGenerativeMask === true;
+        if (geometryChanged && priorNonGenerativeMaskOwned) {
+            if (!layerHasUserMask(layer)) throw new Error("Manifest-owned non-generative mask is missing for " + role + ".");
+            deleteActiveUserMask(document, layer);
+        }
+        if (geometryChanged) {
+            var executionPlacement = cloneJsonValue(placementChanges), scaleChanged = own(placementChanges, "scale");
+            var effectiveFit = own(effective, "fitMode") ? effective.fitMode : "contain";
+            var changesTargetBounds = own(placementChanges, "coordinateSpace") || own(placementChanges, "fitMode") || own(placementChanges, "maxWidth") || own(placementChanges, "maxHeight");
+            var scaleNeedsFitBaseline = scaleChanged && effectiveFit !== "keep-transform";
+            if (!own(executionPlacement, "coordinateSpace") && own(effective, "coordinateSpace")) executionPlacement.coordinateSpace = effective.coordinateSpace;
+            if (changesTargetBounds || scaleNeedsFitBaseline) {
+                var targetFields = ["coordinateSpace", "x", "y", "maxWidth", "maxHeight"];
+                for (var targetFieldIndex = 0; targetFieldIndex < targetFields.length; targetFieldIndex++) {
+                    var targetField = targetFields[targetFieldIndex];
+                    if (!own(executionPlacement, targetField) && own(effective, targetField)) executionPlacement[targetField] = cloneJsonValue(effective[targetField]);
+                }
+                if (!own(executionPlacement, "fitMode") && own(effective, "fitMode")) executionPlacement.fitMode = effective.fitMode;
+                var resolvedFit = own(executionPlacement, "fitMode") ? executionPlacement.fitMode : (scaleNeedsFitBaseline ? effectiveFit : ((own(executionPlacement, "maxWidth") || own(executionPlacement, "maxHeight")) ? "contain" : "keep-transform"));
+                if (!own(executionPlacement, "fitMode")) executionPlacement.fitMode = resolvedFit;
+                if (!own(executionPlacement, "scale") && own(effective, "scale") && (resolvedFit === "contain" || resolvedFit === "cover")) executionPlacement.scale = effective.scale;
+            }
+            var executionFit = own(executionPlacement, "fitMode") ? executionPlacement.fitMode : "keep-transform";
+            if (scaleChanged && executionFit === "keep-transform") {
+                var priorScale = previousPlacement && own(previousPlacement, "scale") ? Number(previousPlacement.scale) : 1;
+                executionPlacement.scale = Number(placementChanges.scale) / priorScale;
+            }
+            var defaultFit = changesTargetBounds || scaleNeedsFitBaseline ? effectiveFit : "keep-transform";
+            applyLayerPlacement(document, layer, role, executionPlacement, defaultFit, layoutPreset);
+        }
+        var bounds = placementTargetBounds(document, role, effective, layoutPreset);
+        var baseRole = role + "ClippingBase", priorClippingOwned = previousPlacement && previousPlacement.clippingMask === true;
+        if (references[baseRole] && !priorClippingOwned) throw new Error("Manifest clipping-base ownership is inconsistent for " + role + ".");
+        if (own(placementChanges, "clippingMask") || (geometryChanged && effective.clippingMask === true)) {
+            var updatedBase = applyClippingPreference(document, layer, groupForAssetRole(groups, role), role, bounds, effective.clippingMask, priorClippingOwned ? references[baseRole] : null);
+            if (updatedBase) references[baseRole] = updatedBase;
+            else if (own(references, baseRole)) delete references[baseRole];
+        }
+        if (own(placementChanges, "nonGenerativeMask") || (geometryChanged && effective.nonGenerativeMask === true)) applyNonGenerativeMaskPreference(document, layer, bounds, effective.nonGenerativeMask, role, priorNonGenerativeMaskOwned, false);
+        setLayerEffectsForPlacement(document, layer, placementChanges, accentColor);
+    }
+    function applyVisibilityChanges(references, changes) {
+        if (!changes) return;
+        for (var i = 0; i < changes.length; i++) {
+            var target = visibilityTarget(references, changes[i].role);
+            if (!target) throw new Error("Manifest has no semantic layer for visibility role: " + changes[i].role);
+            target.visible = changes[i].visible;
+            if (Boolean(target.visible) !== changes[i].visible) throw new Error("Photoshop did not retain visibility for role: " + changes[i].role);
+        }
+    }
+    function sourceBaleState(document, baleCc) {
+        var wrappers = [], matchingGroups = [];
+        for (var i = 0; i < document.layers.length; i++) if (document.layers[i].typename === "LayerSet" && document.layers[i].name === "00 - BALE CC") wrappers.push(document.layers[i]);
+        findNamedGroups(document.layers, baleCc.groupName, matchingGroups);
+        if (wrappers.length > 1 || matchingGroups.length > 1) throw new Error("The source match card contains duplicate Bale CC groups.");
+        if (matchingGroups.length === 1 && wrappers.length !== 1) throw new Error("The Bale CC source group is not contained by exactly one 00 - BALE CC wrapper.");
+        if (matchingGroups.length === 1) {
+            var wrapperEntry = semanticLayerEntry(document, wrappers[0]), sourceEntry = semanticLayerEntry(document, matchingGroups[0]);
+            if (!indexPathIsPrefix(wrapperEntry.indexPath, sourceEntry.indexPath) || sourceEntry.indexPath.length !== wrapperEntry.indexPath.length + 1) throw new Error("The Bale CC source group is not a direct child of its semantic wrapper.");
+        }
+        return { wrapper: wrappers.length ? wrappers[0] : null, sourceGroup: matchingGroups.length ? matchingGroups[0] : null };
+    }
+    function validateSourceMatchCardIntegrity(document, manifest, sourceTargets) {
+        if (toPixels(document.width) !== Number(manifest.canvas.width) || toPixels(document.height) !== Number(manifest.canvas.height) || Math.abs(Number(document.resolution) - Number(manifest.canvas.resolution)) > 0.001) {
+            throw new Error("The source document canvas or resolution no longer matches the manifest.");
+        }
+        var requiredGroups = ["templateBackground", "atmosphere", "framesAndPanels", "competitorRenders", "championshipAndBelt", "matchTitleGroup", "eventInformation", "showLogoGroup", "finishingEffects"];
+        for (var groupIndex = 0; groupIndex < requiredGroups.length; groupIndex++) {
+            var groupRole = requiredGroups[groupIndex];
+            if (!sourceTargets[groupRole] || sourceTargets[groupRole].layer.typename !== "LayerSet") throw new Error("Required semantic group is missing or no longer a group: " + groupRole);
+        }
+        if (!sourceTargets.templateBackgroundLayer || !isSmartObject(sourceTargets.templateBackgroundLayer.layer)) throw new Error("The template background is no longer a Smart Object.");
+        var assetRoles = ownKeys(manifest.assets);
+        for (var assetIndex = 0; assetIndex < assetRoles.length; assetIndex++) {
+            var assetRole = assetRoles[assetIndex];
+            if (!sourceTargets[assetRole] || !isSmartObject(sourceTargets[assetRole].layer)) throw new Error("Protected asset is no longer a Smart Object: " + assetRole);
+            var baseRole = assetRole + "ClippingBase", placement = own(manifest.placements, assetRole) ? manifest.placements[assetRole] : null;
+            if (placement && placement.clippingMask === true) {
+                if (!sourceTargets[baseRole] || !Boolean(sourceTargets[assetRole].layer.grouped)) throw new Error("Manifest-owned clipping structure is incomplete for " + assetRole);
+                var assetPath = sourceTargets[assetRole].indexPath, basePath = sourceTargets[baseRole].indexPath;
+                if (assetPath.length !== basePath.length) throw new Error("Manifest-owned clipping base is not an immediate sibling for " + assetRole);
+                for (var pathIndex = 0; pathIndex < assetPath.length - 1; pathIndex++) if (Number(assetPath[pathIndex]) !== Number(basePath[pathIndex])) throw new Error("Manifest-owned clipping base has a different parent for " + assetRole);
+                if (Number(basePath[basePath.length - 1]) !== Number(assetPath[assetPath.length - 1]) + 1) throw new Error("Manifest-owned clipping base is not immediately below " + assetRole);
+            } else if (sourceTargets[baseRole]) throw new Error("A clipping-base semantic role exists without manifest ownership for " + assetRole);
+            if (placement && placement.nonGenerativeMask === true && !layerHasUserMask(sourceTargets[assetRole].layer)) throw new Error("Manifest-owned non-generative mask is missing for " + assetRole);
+        }
+        var textRoles = ownKeys(manifest.text);
+        for (var textIndex = 0; textIndex < textRoles.length; textIndex++) {
+            var textRole = textRoles[textIndex];
+            if (!sourceTargets[textRole] || !isTextLayer(sourceTargets[textRole].layer)) throw new Error("Manifest text role is no longer editable text: " + textRole);
+        }
+    }
+    function buildUpdatedManifest(previousManifest, payload, semanticLayers, warnings) {
+        var changes = payload.changes, manifest = cloneJsonValue(previousManifest);
+        manifest.outputPsdName = payload.outputPsdName;
+        manifest.outputPreviewName = payload.outputPreviewName;
+        manifest.outputManifestName = payload.outputManifestName;
+        manifest.parentManifestName = payload.manifestFileName;
+        manifest.updatedAt = utcTimestamp();
+        manifest.semanticLayers = semanticLayers;
+        if (own(changes, "templateBackground")) manifest.templateBackground = cloneJsonValue(changes.templateBackground);
+        if (own(changes, "assets")) mergeOwn(manifest.assets, changes.assets);
+        if (own(changes, "text")) mergeOwn(manifest.text, changes.text);
+        if (own(changes, "placements")) mergePlacementMap(manifest.placements, changes.placements);
+        if (own(changes, "style")) {
+            var styleKeys = ownKeys(changes.style);
+            for (var i = 0; i < styleKeys.length; i++) {
+                if (styleKeys[i] === "fonts") mergeOwn(manifest.styleFonts, changes.style.fonts);
+                else manifest.themeColors[styleKeys[i]] = cloneJsonValue(changes.style[styleKeys[i]]);
+            }
+        }
+        manifest.warnings = warnings.slice(0);
+        return manifest;
+    }
+    function updateMatchCard(input) {
+        var payload = validateUpdateMatchCardPayload(input.payload || {}), folder = matchWorkingFolder(input), baleCc = configuredBaleCc(input, true);
+        var stage = "preflight", manifestFile = childFile(folder, payload.manifestFileName), previousManifest = readValidatedMatchCardManifest(manifestFile);
+        if (previousManifest.outputManifestName.toLowerCase() !== payload.manifestFileName.toLowerCase()) throw new Error("The selected manifest filename does not match its recorded outputManifestName.");
+        if (previousManifest.baleCc.packageFileName.toLowerCase() !== baleCc.packageFileName.toLowerCase() || previousManifest.baleCc.groupName !== baleCc.groupName) throw new Error("The manifest Bale CC identity does not match trusted local configuration.");
+        if (payload.outputPsdName.toLowerCase() === previousManifest.outputPsdName.toLowerCase() || payload.outputPreviewName.toLowerCase() === previousManifest.outputPreviewName.toLowerCase()) throw new Error("Update outputs must use new versioned filenames.");
+        if (own(payload.changes, "placements")) {
+            var requestedPlacementRoles = ownKeys(payload.changes.placements);
+            for (var placementIndex = 0; placementIndex < requestedPlacementRoles.length; placementIndex++) {
+                var requestedPlacementRole = requestedPlacementRoles[placementIndex];
+                var roleAlreadyExists = own(previousManifest.assets, requestedPlacementRole);
+                var roleWillBeAdded = own(payload.changes, "assets") && own(payload.changes.assets, requestedPlacementRole);
+                if (!roleAlreadyExists && !roleWillBeAdded) throw new Error("Placement update does not reference an existing or replacement asset: " + requestedPlacementRole);
+                var priorPlacement = own(previousManifest.placements, requestedPlacementRole) ? previousManifest.placements[requestedPlacementRole] : null;
+                validatePlacement(mergedPlacement(priorPlacement, payload.changes.placements[requestedPlacementRole]), "merged changes.placements." + requestedPlacementRole);
+            }
+        }
+        var sourceFile = childFile(folder, previousManifest.outputPsdName);
+        if (!sourceFile.exists) throw new Error("Prior match-card PSD not found: " + previousManifest.outputPsdName);
+        var changedFiles = [], i;
+        if (own(payload.changes, "templateBackground")) changedFiles.push(payload.changes.templateBackground.fileName);
+        if (own(payload.changes, "assets")) {
+            var changedAssetKeys = ownKeys(payload.changes.assets);
+            for (i = 0; i < changedAssetKeys.length; i++) changedFiles.push(payload.changes.assets[changedAssetKeys[i]]);
+        }
+        for (i = 0; i < changedFiles.length; i++) if (!childFile(folder, changedFiles[i]).exists) throw new Error("Missing requested update asset: " + changedFiles[i]);
+        var baleStatus = inspectBaleCcPackage(input);
+        if (!baleStatus.available) throw new Error(baleStatus.issue || "Bale CC package is unavailable.");
+        var outputPsd = childFile(folder, payload.outputPsdName), outputPreview = childFile(folder, payload.outputPreviewName), outputManifest = childFile(folder, payload.outputManifestName);
+        if (outputPsd.exists || outputPreview.exists || outputManifest.exists) throw new Error("One or more update output files already exist; use new versioned names.");
+
+        var previous = currentDocumentOrNull(), sourceDocument = null, sourceOwned = false, workingDocument = null, previewDocument = null, attemptedOutputs = [], warnings = [];
+        var previousDialogs = null;
+        try { previousDialogs = app.displayDialogs; app.displayDialogs = DialogModes.NO; } catch (_updateDialogReadError) {}
+        try {
+            stage = "open prior match card";
+            sourceDocument = findOpenDocumentForFile(sourceFile);
+            if (sourceDocument) {
+                if (!sourceDocument.saved) throw new Error("The prior match-card PSD is open with unsaved changes; save or close it before updating.");
+            } else { sourceDocument = app.open(sourceFile); sourceOwned = true; }
+            app.activeDocument = sourceDocument;
+
+            stage = "validate manifest semantic roles";
+            var sourceTargets = {}, semanticKeys = ownKeys(previousManifest.semanticLayers), role;
+            var manifestBaleWrapper = resolveOptionalLayerByManifestEntry(sourceDocument, "baleCc", previousManifest.semanticLayers.baleCc);
+            var manifestBaleSourceGroup = resolveOptionalLayerByManifestEntry(sourceDocument, "baleCcSourceGroup", previousManifest.semanticLayers.baleCcSourceGroup);
+            if (!manifestBaleWrapper && manifestBaleSourceGroup) throw new Error("The manifest-owned Bale CC source group exists without its wrapper.");
+            if (manifestBaleWrapper && manifestBaleWrapper.indexPath.length !== 1) throw new Error("The manifest-owned Bale CC wrapper is no longer a top-level group.");
+            if (manifestBaleWrapper && manifestBaleSourceGroup && (!indexPathIsPrefix(manifestBaleWrapper.indexPath, manifestBaleSourceGroup.indexPath) || manifestBaleSourceGroup.indexPath.length !== manifestBaleWrapper.indexPath.length + 1)) throw new Error("The manifest-owned Bale CC source group is not a direct child of its wrapper.");
+            if (manifestBaleWrapper) sourceTargets.baleCc = manifestBaleWrapper;
+            if (manifestBaleSourceGroup) sourceTargets.baleCcSourceGroup = manifestBaleSourceGroup;
+            for (i = 0; i < semanticKeys.length; i++) {
+                role = semanticKeys[i];
+                if (role === "baleCc" || role === "baleCcSourceGroup") continue;
+                sourceTargets[role] = resolveLayerByManifestEntry(sourceDocument, role, previousManifest.semanticLayers[role]);
+            }
+            validateSourceMatchCardIntegrity(sourceDocument, previousManifest, sourceTargets);
+            var baleState = sourceBaleState(sourceDocument, baleCc);
+            if (baleState.wrapper && (!manifestBaleWrapper || safeLayerId(baleState.wrapper) !== safeLayerId(manifestBaleWrapper.layer))) throw new Error("A Bale CC wrapper exists but is not the manifest-owned wrapper.");
+            if (baleState.sourceGroup && (!manifestBaleSourceGroup || safeLayerId(baleState.sourceGroup) !== safeLayerId(manifestBaleSourceGroup.layer))) throw new Error("A Bale CC source group exists but is not the manifest-owned source group.");
+
+            stage = "duplicate prior match card";
+            workingDocument = sourceDocument.duplicate(payload.outputPsdName.replace(/\.psd$/i, ""), false);
+            app.activeDocument = workingDocument;
+            var references = {};
+            for (role in sourceTargets) if (own(sourceTargets, role)) {
+                references[role] = getLayerByIndexPath(workingDocument, sourceTargets[role].indexPath);
+                if (own(previousManifest.semanticLayers, role)) verifyDuplicatedSemanticLayer(references[role], role, previousManifest.semanticLayers[role]);
+            }
+
+            stage = "ensure Bale CC";
+            if (!references.baleCcSourceGroup) {
+                if (references.baleCc) references.baleCcSourceGroup = importBaleCcSourceIntoWrapper(input, workingDocument, references.baleCc);
+                else {
+                    var importedBale = importBaleCcGroup(input, workingDocument);
+                    references.baleCc = importedBale.wrapper; references.baleCcSourceGroup = importedBale.sourceGroup;
+                }
+            }
+            var updatedBaleState = sourceBaleState(workingDocument, baleCc);
+            if (!updatedBaleState.wrapper || !updatedBaleState.sourceGroup) throw new Error("The updated card does not contain exactly one complete Bale CC group.");
+            references.baleCc = updatedBaleState.wrapper; references.baleCcSourceGroup = updatedBaleState.sourceGroup;
+
+            var groups = {
+                templateBackground: references.templateBackground,
+                atmosphere: references.atmosphere,
+                framesAndPanels: references.framesAndPanels,
+                competitorRenders: references.competitorRenders,
+                championshipAndBelt: references.championshipAndBelt,
+                matchTitleGroup: references.matchTitleGroup,
+                eventInformation: references.eventInformation,
+                showLogoGroup: references.showLogoGroup,
+                finishingEffects: references.finishingEffects
+            };
+            for (var groupRole in groups) if (own(groups, groupRole) && (!groups[groupRole] || groups[groupRole].typename !== "LayerSet")) throw new Error("Manifest semantic group is unavailable: " + groupRole);
+            var currentStyle = {
+                primaryColor: cloneJsonValue(previousManifest.themeColors.primaryColor),
+                secondaryColor: cloneJsonValue(previousManifest.themeColors.secondaryColor),
+                accentColor: cloneJsonValue(previousManifest.themeColors.accentColor),
+                metallicColor: cloneJsonValue(previousManifest.themeColors.metallicColor),
+                fonts: cloneJsonValue(previousManifest.styleFonts || {}),
+                layoutPreset: previousManifest.layoutPreset
+            };
+            if (own(payload.changes, "style")) {
+                var changedStyleKeys = ownKeys(payload.changes.style);
+                for (i = 0; i < changedStyleKeys.length; i++) {
+                    if (changedStyleKeys[i] === "fonts") mergeOwn(currentStyle.fonts, payload.changes.style.fonts);
+                    else currentStyle[changedStyleKeys[i]] = cloneJsonValue(payload.changes.style[changedStyleKeys[i]]);
+                }
+            }
+
+            if (own(payload.changes, "templateBackground")) {
+                stage = "replace template background";
+                if (!references.templateBackgroundLayer || !isSmartObject(references.templateBackgroundLayer)) throw new Error("Template-background semantic role is not a Smart Object.");
+                workingDocument.activeLayer = references.templateBackgroundLayer;
+                replaceSelectedSmartObject(childFile(folder, payload.changes.templateBackground.fileName));
+                applyLayerPlacement(workingDocument, references.templateBackgroundLayer, "templateBackground", null, payload.changes.templateBackground.fitMode, previousManifest.layoutPreset);
+            }
+
+            if (own(payload.changes, "assets")) {
+                stage = "replace protected assets";
+                for (i = 0; i < changedAssetKeys.length; i++) {
+                    var assetRole = changedAssetKeys[i], assetFile = childFile(folder, payload.changes.assets[assetRole]);
+                    var placement = own(payload.changes, "placements") && own(payload.changes.placements, assetRole) ? payload.changes.placements[assetRole] : null;
+                    if (references[assetRole]) {
+                        if (!isSmartObject(references[assetRole])) throw new Error("Semantic asset role is not a Smart Object: " + assetRole);
+                        workingDocument.activeLayer = references[assetRole];
+                        replaceSelectedSmartObject(assetFile);
+                        if (placement) {
+                            var previousAssetPlacement = own(previousManifest.placements, assetRole) ? previousManifest.placements[assetRole] : null;
+                            applyExistingAssetPlacement(workingDocument, references, groups, assetRole, placement, previousAssetPlacement, currentStyle.accentColor, previousManifest.layoutPreset);
+                        }
+                    } else {
+                        references[assetRole] = placeMatchAsset(workingDocument, folder, assetRole, payload.changes.assets[assetRole], groups, placement, currentStyle.accentColor, previousManifest.layoutPreset, references);
+                    }
+                }
+            }
+
+            if (own(payload.changes, "placements")) {
+                stage = "apply asset placements";
+                var placementRoles = ownKeys(payload.changes.placements);
+                for (i = 0; i < placementRoles.length; i++) {
+                    role = placementRoles[i];
+                    if (own(payload.changes, "assets") && own(payload.changes.assets, role)) continue;
+                    if (!references[role] || !isSmartObject(references[role])) throw new Error("Placement role is not an existing Smart Object: " + role);
+                    var previousPlacement = own(previousManifest.placements, role) ? previousManifest.placements[role] : null;
+                    applyExistingAssetPlacement(workingDocument, references, groups, role, payload.changes.placements[role], previousPlacement, currentStyle.accentColor, previousManifest.layoutPreset);
+                }
+            }
+
+            if (own(payload.changes, "text")) {
+                stage = "update editable text";
+                var changedTextKeys = ownKeys(payload.changes.text), availableFonts = installedFonts();
+                for (i = 0; i < changedTextKeys.length; i++) {
+                    role = changedTextKeys[i];
+                    if (references[role]) {
+                        if (!isTextLayer(references[role])) throw new Error("Semantic text role is not editable text: " + role);
+                        applyContentOnlyTextEdit(references[role], payload.changes.text[role]);
+                    } else {
+                        var targetTextGroup = role === "date" || role === "time" || role === "venue" ? groups.eventInformation : (role === "championship" ? groups.championshipAndBelt : groups.matchTitleGroup);
+                        references[role] = createEditableMatchText(workingDocument, targetTextGroup, role, payload.changes.text[role], currentStyle, availableFonts, warnings);
+                    }
+                }
+            }
+
+            stage = "update editable theme and fonts";
+            if (own(payload.changes, "style")) {
+                applyThemeChanges(workingDocument, references, payload.changes.style, currentStyle);
+                if (own(payload.changes.style, "accentColor")) {
+                    var effectivePlacements = cloneJsonValue(previousManifest.placements || {});
+                    if (own(payload.changes, "placements")) mergePlacementMap(effectivePlacements, payload.changes.placements);
+                    refreshRecordedOuterGlows(workingDocument, references, effectivePlacements, currentStyle.accentColor);
+                }
+                if (own(payload.changes.style, "fonts")) applyRequestedFonts(workingDocument, references, currentStyle.fonts, payload.changes.style.fonts, warnings);
+            }
+            stage = "update visibility";
+            if (own(payload.changes, "visibility")) applyVisibilityChanges(references, payload.changes.visibility);
+
+            stage = "save versioned layered PSD";
+            if (outputPsd.exists || outputPreview.exists || outputManifest.exists) throw new Error("An update output appeared while the job was running; no output was overwritten.");
+            attemptedOutputs.push(outputPsd);
+            var psdOptions = new PhotoshopSaveOptions();
+            psdOptions.layers = true; psdOptions.embedColorProfile = true; psdOptions.alphaChannels = true; psdOptions.annotations = true; psdOptions.spotColors = true;
+            workingDocument.saveAs(outputPsd, psdOptions, false, Extension.LOWERCASE);
+
+            stage = "export versioned PNG";
+            if (outputPreview.exists) throw new Error("The PNG output appeared while the update was running; it was not overwritten.");
+            attemptedOutputs.push(outputPreview);
+            previewDocument = workingDocument.duplicate(payload.outputPreviewName.replace(/\.png$/i, "_preview"), true);
+            app.activeDocument = previewDocument; previewDocument.flatten(); savePng(previewDocument, outputPreview);
+            previewDocument.close(SaveOptions.DONOTSAVECHANGES); previewDocument = null; app.activeDocument = workingDocument;
+
+            stage = "write versioned manifest";
+            var semanticLayers = captureSemanticLayers(workingDocument, references);
+            var updatedManifest = buildUpdatedManifest(previousManifest, payload, semanticLayers, warnings);
+            validateMatchCardManifest(updatedManifest);
+            attemptedOutputs.push(outputManifest); writeMatchCardManifest(outputManifest, updatedManifest);
+            if (sourceOwned && sourceDocument) { sourceDocument.close(SaveOptions.DONOTSAVECHANGES); sourceDocument = null; }
+            app.activeDocument = workingDocument;
+            if (previousDialogs !== null) try { app.displayDialogs = previousDialogs; } catch (_updateDialogRestoreSuccessError) {}
+            return {
+                outputPsdName: payload.outputPsdName,
+                outputPreviewName: payload.outputPreviewName,
+                outputManifestName: payload.outputManifestName,
+                outputDocumentOpen: workingDocument.name,
+                baleCcPreservedOrImported: true,
+                previousVersionPreserved: true,
+                protectedAssetsPlacedAsSmartObjects: true,
+                warnings: warnings
+            };
+        } catch (error) {
+            if (previewDocument) try { previewDocument.close(SaveOptions.DONOTSAVECHANGES); } catch (_updatePreviewCloseError) {}
+            if (workingDocument) try { workingDocument.close(SaveOptions.DONOTSAVECHANGES); } catch (_updateWorkingCloseError) {}
+            if (sourceOwned && sourceDocument) try { sourceDocument.close(SaveOptions.DONOTSAVECHANGES); } catch (_updateSourceCloseError) {}
+            restoreActiveDocument(previous);
+            var cleanupFailures = [];
+            cleanupAttemptedOutputs(attemptedOutputs, cleanupFailures);
+            if (previousDialogs !== null) try { app.displayDialogs = previousDialogs; } catch (_updateDialogRestoreError) {}
+            var suffix = cleanupFailures.length ? " Cleanup error: " + cleanupFailures.join("; ") + "." : "";
+            throw new Error("updateMatchCard stage \"" + stage + "\" failed: " + error.message + suffix);
+        }
+    }
     function execute(input) {
     if (input.type === "inspectDocument") {
         return inspectDocument(input.payload || {});
@@ -1194,6 +2915,18 @@
     }
     if (input.type === "renameLayers") {
         return renameLayers(input);
+    }
+    if (input.type === "listMatchCardAssets") {
+        return listMatchCardAssets(input);
+    }
+    if (input.type === "planMatchCard") {
+        return planMatchCard(input);
+    }
+    if (input.type === "createMatchCard") {
+        return createMatchCard(input);
+    }
+    if (input.type === "updateMatchCard") {
+        return updateMatchCard(input);
     }
     throw new Error("Unsupported operation: " + input.type);
 }

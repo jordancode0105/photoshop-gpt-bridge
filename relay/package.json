@@ -2,7 +2,7 @@
   "name": "photoshop-gpt-bridge-relay",
   "version": "0.1.0",
   "private": true,
-  "description": "Secure relay between a private Custom GPT Action and a local Photoshop UXP plugin.",
+  "description": "Secure relay between a private Custom GPT Action and a local Photoshop PowerShell agent.",
   "main": "src/server.js",
   "scripts": {
     "start": "node src/server.js",

@@ -7,6 +7,7 @@ const { spawn } = require("node:child_process");
 const port = 32_000 + (process.pid % 1_000);
 const baseUrl = `http://127.0.0.1:${port}`;
 const gptToken = "test-gpt-token-at-least-24-characters";
+const deviceToken = "test-device-token-at-least-24-characters";
 let server;
 let serverOutput = "";
 
@@ -17,7 +18,7 @@ before(async () => {
       ...process.env,
       PORT: String(port),
       GPT_ACTION_API_KEY: gptToken,
-      PHOTOSHOP_DEVICE_TOKEN: "test-device-token-at-least-24-characters",
+      PHOTOSHOP_DEVICE_TOKEN: deviceToken,
       JOB_TTL_MINUTES: "60",
     },
     stdio: ["ignore", "pipe", "pipe"],
@@ -46,7 +47,10 @@ after(() => {
 });
 
 async function request(path, { authenticated = true, body } = {}) {
-  const headers = { "content-type": "application/json" };
+  const headers = {
+    "content-type": "application/json",
+    "x-forwarded-for": path.includes("match-card") ? "198.51.100.10" : "198.51.100.20",
+  };
   if (authenticated) headers.authorization = `Bearer ${gptToken}`;
   const response = await fetch(`${baseUrl}${path}`, {
     method: "POST",
@@ -55,6 +59,44 @@ async function request(path, { authenticated = true, body } = {}) {
   });
   const responseBody = await response.json();
   return { response, body: responseBody };
+}
+
+async function pluginRequest({ authenticated = true, capability, body = {} } = {}) {
+  const headers = { "content-type": "application/json" };
+  if (authenticated) headers["x-device-token"] = deviceToken;
+  if (capability) headers["x-photoshop-bridge-agent"] = capability;
+  const response = await fetch(`${baseUrl}/api/plugin/jobs/claim-next`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify(body),
+  });
+  const responseText = await response.text();
+  return {
+    response,
+    body: responseText ? JSON.parse(responseText) : null,
+  };
+}
+
+async function finalizePluginJob(jobId, action, body, { capability = "powershell-v1" } = {}) {
+  const headers = {
+    "content-type": "application/json",
+    "x-device-token": deviceToken,
+  };
+  if (capability !== null) headers["x-photoshop-bridge-agent"] = capability;
+  const response = await fetch(`${baseUrl}/api/plugin/jobs/${jobId}/${action}`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify(body),
+  });
+  return { response, body: await response.json() };
+}
+
+async function completePluginJob(jobId, result, options) {
+  return finalizePluginJob(jobId, "complete", { result }, options);
+}
+
+async function failPluginJob(jobId, error, options) {
+  return finalizePluginJob(jobId, "fail", { error }, options);
 }
 
 function validRecolor(overrides = {}) {
@@ -113,12 +155,755 @@ function validRename(overrides = {}) {
   };
 }
 
+function validCanvas(overrides = {}) {
+  return { width: 1920, height: 1080, resolution: 72, ...overrides };
+}
+
+function validTemplateBackground(overrides = {}) {
+  return {
+    fileName: "ECCW_Breakker_vs_Rage_template_bg_v1.png",
+    fitMode: "cover",
+    ...overrides,
+  };
+}
+
+function validStyle(overrides = {}) {
+  return {
+    description: "premium red black white wrestling broadcast presentation",
+    primaryColor: { red: 190, green: 0, blue: 28 },
+    secondaryColor: { red: 8, green: 8, blue: 10 },
+    accentColor: { red: 245, green: 245, blue: 242 },
+    metallicColor: { red: 142, green: 148, blue: 154 },
+    layoutPreset: "two-competitor-title-center",
+    fonts: {
+      mainTitle: "Arial Bold",
+      competitorNames: "Arial",
+    },
+    ...overrides,
+  };
+}
+
+function validAssets(overrides = {}) {
+  return {
+    showLogo: "ECCW.png",
+    competitorLeft: "Breakker.png",
+    competitorRight: "Rage.png",
+    beltImage: "IC_Title.png",
+    venueLogo: "MGM.png",
+    ...overrides,
+  };
+}
+
+function validMatchCardText(overrides = {}) {
+  return {
+    championship: "INTERCONTINENTAL CHAMPIONSHIP",
+    competitorLeftName: "BREAKKER",
+    competitorRightName: "RAGE",
+    matchTitle: "BREAKKER\nRAGE",
+    stipulation: "FIRST TO FIVE",
+    date: "SUNDAY · JULY 20",
+    time: "2 PM EST | 1 PM CST | 7 PM GMT",
+    venue: "LIVE! FROM THE MGM GRAND ARENA IN LAS VEGAS",
+    ...overrides,
+  };
+}
+
+function validCreateMatchCard(overrides = {}) {
+  return {
+    briefName: "ECCW Breakker vs Rage",
+    canvas: validCanvas(),
+    templateBackground: validTemplateBackground(),
+    style: validStyle(),
+    assets: validAssets(),
+    text: validMatchCardText(),
+    placements: {
+      competitorLeft: {
+        coordinateSpace: "normalized",
+        x: 0.25,
+        y: 0.55,
+        fitMode: "contain",
+        scale: 1,
+        maxWidth: 0.45,
+        maxHeight: 0.9,
+        dropShadow: true,
+      },
+      competitorRight: {
+        coordinateSpace: "pixels",
+        x: 1440,
+        y: 594,
+        fitMode: "contain",
+        maxWidth: 860,
+        maxHeight: 972,
+        outerGlow: true,
+      },
+    },
+    outputPsdName: "ECCW_Breakker_vs_Rage_v1.psd",
+    outputPreviewName: "ECCW_Breakker_vs_Rage_v1.png",
+    outputManifestName: "ECCW_Breakker_vs_Rage_v1.matchcard.json",
+    ...overrides,
+  };
+}
+
+function validUpdateMatchCard(overrides = {}) {
+  return {
+    manifestFileName: "ECCW_Breakker_vs_Rage_v1.matchcard.json",
+    changes: {
+      assets: { competitorRight: "Rage_v2.png" },
+      text: { competitorRightName: "RAGE II" },
+      style: {
+        primaryColor: { red: 170, green: 0, blue: 24 },
+        fonts: { mainTitle: "Arial Bold" },
+      },
+      placements: {
+        competitorRight: {
+          coordinateSpace: "normalized",
+          x: 0.76,
+          y: 0.56,
+          fitMode: "keep-transform",
+          scale: 1.05,
+        },
+      },
+      visibility: [
+        { role: "beltImage", visible: true },
+        { role: "finishingEffects", visible: true },
+      ],
+    },
+    outputPsdName: "ECCW_Breakker_vs_Rage_v2.psd",
+    outputPreviewName: "ECCW_Breakker_vs_Rage_v2.png",
+    outputManifestName: "ECCW_Breakker_vs_Rage_v2.matchcard.json",
+    ...overrides,
+  };
+}
+
 async function getJob(jobId) {
   const response = await fetch(`${baseUrl}/api/jobs/${jobId}`, {
     headers: { authorization: `Bearer ${gptToken}` },
   });
   assert.equal(response.status, 200);
   return response.json();
+}
+
+test("creates a PowerShell-only read-only asset inventory job", async () => {
+  const created = await request("/api/jobs/list-match-card-assets", { body: {} });
+  assert.equal(created.response.status, 202);
+  assert.equal(created.body.status, "pending");
+  const job = await getJob(created.body.jobId);
+  assert.equal(job.type, "listMatchCardAssets");
+  assert.equal(job.requiresConfirmation, false);
+});
+
+test("asset inventory requires GPT authentication and a closed empty body", async () => {
+  const unauthenticated = await request("/api/jobs/list-match-card-assets", {
+    authenticated: false,
+    body: {},
+  });
+  assert.equal(unauthenticated.response.status, 401);
+
+  const unknownProperty = await request("/api/jobs/list-match-card-assets", {
+    body: { workingFolder: "C:\\Users\\example" },
+  });
+  assert.equal(unknownProperty.response.status, 400);
+  assert.equal(unknownProperty.body.error, "Invalid request");
+});
+
+test("legacy claimants cannot claim PowerShell match-card jobs", async () => {
+  const unauthenticatedPowerShellClaim = await pluginRequest({
+    authenticated: false,
+    capability: "powershell-v1",
+  });
+  assert.equal(unauthenticatedPowerShellClaim.response.status, 401);
+
+  const legacyClaim = await pluginRequest();
+  assert.equal(legacyClaim.response.status, 204);
+  assert.equal(legacyClaim.body, null);
+
+  const wrongCapability = await pluginRequest({ capability: "generic-v1" });
+  assert.equal(wrongCapability.response.status, 204);
+
+  const powershellClaim = await pluginRequest({ capability: "powershell-v1" });
+  assert.equal(powershellClaim.response.status, 200);
+  assert.equal(powershellClaim.body.type, "listMatchCardAssets");
+  assert.equal(powershellClaim.body.executor, "powershell-v1");
+  assert.equal(powershellClaim.body.requiresConfirmation, false);
+
+  const completionWithoutCapability = await completePluginJob(
+    powershellClaim.body.id,
+    {},
+    { capability: null }
+  );
+  assert.equal(completionWithoutCapability.response.status, 403);
+
+  const completionWithWrongCapability = await completePluginJob(
+    powershellClaim.body.id,
+    {},
+    { capability: "generic-v1" }
+  );
+  assert.equal(completionWithWrongCapability.response.status, 403);
+
+  const unsafeInventoryResult = await completePluginJob(powershellClaim.body.id, {
+    assets: [],
+    baleCcConfigured: true,
+    baleCcPackageFileName: "BaleCC_Master.psd",
+    supportedExtensions: [".png", ".jpg", ".jpeg", ".psd", ".tif", ".tiff"],
+    recursive: false,
+    workingFolder: "C:\\Users\\person\\PhotoshopBridge",
+  });
+  assert.equal(unsafeInventoryResult.response.status, 400);
+  assert.equal(unsafeInventoryResult.body.error, "Invalid asset inventory result");
+
+  const completed = await completePluginJob(powershellClaim.body.id, {
+    assets: [
+      {
+        fileName: "ECCW.png",
+        extension: ".png",
+        fileSizeBytes: 123456,
+        width: 1920,
+        height: 1080,
+        isPsd: false,
+        isPngOrJpeg: true,
+        suggestedRole: "showLogo",
+        matchesConfiguredBaleCcPackage: false,
+        appearsSuitableAsTemplateBackground: false,
+      },
+      {
+        fileName: "BaleCC_Master.psd",
+        extension: ".psd",
+        fileSizeBytes: 654321,
+        width: null,
+        height: null,
+        isPsd: true,
+        isPngOrJpeg: false,
+        suggestedRole: "baleCcPackage",
+        matchesConfiguredBaleCcPackage: true,
+        appearsSuitableAsTemplateBackground: false,
+      },
+    ],
+    baleCcConfigured: true,
+    baleCcPackageFileName: "BaleCC_Master.psd",
+    supportedExtensions: [".png", ".jpg", ".jpeg", ".psd", ".tif", ".tiff"],
+    recursive: false,
+  });
+  assert.equal(completed.response.status, 200);
+
+  const repeatedCompletion = await completePluginJob(powershellClaim.body.id, {
+    assets: [],
+    baleCcConfigured: false,
+    baleCcPackageFileName: null,
+    supportedExtensions: [".png", ".jpg", ".jpeg", ".psd", ".tif", ".tiff"],
+    recursive: false,
+  });
+  assert.equal(repeatedCompletion.response.status, 409);
+
+  const publicResult = await getJob(powershellClaim.body.id);
+  assert.equal(publicResult.status, "succeeded");
+  assert.equal(publicResult.result.assets[0].fileName, "ECCW.png");
+  assert.equal(publicResult.result.assets[1].width, null);
+  assert.equal(publicResult.result.assets[1].suggestedRole, "baleCcPackage");
+  assert.equal(publicResult.result.baleCcPackageFileName, "BaleCC_Master.psd");
+  assert.equal(publicResult.result.recursive, false);
+
+  const queuedIds = new Map();
+  for (const [path, body] of [
+    ["/api/jobs/plan-match-card", validCreateMatchCard()],
+    ["/api/jobs/create-match-card", validCreateMatchCard()],
+    [
+      "/api/jobs/update-match-card",
+      validUpdateMatchCard({
+        changes: { placements: { competitorRight: { x: 100, y: 200, scale: 1.05 } } },
+      }),
+    ],
+  ]) {
+    const queued = await request(path, { body });
+    assert.equal(queued.response.status, 202);
+    queuedIds.set(path, queued.body.jobId);
+  }
+
+  const pendingCompletion = await completePluginJob(
+    queuedIds.get("/api/jobs/create-match-card"),
+    { shouldNotComplete: true }
+  );
+  assert.equal(pendingCompletion.response.status, 409);
+
+  const legacyStillCannotClaim = await pluginRequest();
+  assert.equal(legacyStillCannotClaim.response.status, 204);
+
+  const claimedTypes = new Map();
+  const claimedJobs = new Map();
+  for (let index = 0; index < 3; index += 1) {
+    const claimed = await pluginRequest({ capability: "powershell-v1" });
+    assert.equal(claimed.response.status, 200);
+    assert.equal(claimed.body.executor, "powershell-v1");
+    claimedTypes.set(claimed.body.type, claimed.body.requiresConfirmation);
+    claimedJobs.set(claimed.body.type, claimed.body);
+  }
+  assert.deepEqual(
+    claimedTypes,
+    new Map([
+      ["planMatchCard", false],
+      ["createMatchCard", true],
+      ["updateMatchCard", true],
+    ])
+  );
+  assert.deepEqual(claimedJobs.get("updateMatchCard").payload.changes.placements, {
+    competitorRight: { x: 100, y: 200, scale: 1.05 },
+  });
+
+  const planCompletion = await completePluginJob(claimedJobs.get("planMatchCard").id, {
+    plannedLayers: ["00 - BALE CC", "10 - TEMPLATE BACKGROUND"],
+    diagnostic: "Read C:\\Users\\person\\PhotoshopBridge\\template.png",
+  });
+  assert.equal(planCompletion.response.status, 200);
+  const publicPlan = await getJob(claimedJobs.get("planMatchCard").id);
+  assert.equal(JSON.stringify(publicPlan.result).includes("C:\\\\Users"), false);
+
+  const createFailureWithoutCapability = await failPluginJob(
+    claimedJobs.get("createMatchCard").id,
+    "Failed",
+    { capability: null }
+  );
+  assert.equal(createFailureWithoutCapability.response.status, 403);
+  const createFailure = await failPluginJob(
+    claimedJobs.get("createMatchCard").id,
+    "Failed at C:\\Users\\person\\PhotoshopBridge\\output.psd"
+  );
+  assert.equal(createFailure.response.status, 200);
+  const publicFailure = await getJob(claimedJobs.get("createMatchCard").id);
+  assert.equal(publicFailure.status, "failed");
+  assert.equal(publicFailure.error.includes("C:\\Users"), false);
+});
+
+test("PowerShell claimant can still claim existing operation jobs", async () => {
+  const created = await request("/api/jobs/inspect-document", {
+    body: { documentName: "MatchCard.psd" },
+  });
+  assert.equal(created.response.status, 202);
+
+  const claim = await pluginRequest({ capability: "powershell-v1" });
+  assert.equal(claim.response.status, 200);
+  assert.equal(claim.body.id, created.body.jobId);
+  assert.equal(claim.body.type, "inspectDocument");
+  assert.equal(claim.body.executor, "any");
+  assert.equal(claim.body.requiresConfirmation, false);
+
+  const completed = await completePluginJob(claim.body.id, { inspected: true }, {
+    capability: null,
+  });
+  assert.equal(completed.response.status, 200);
+});
+
+test("asset inventory accepts an omitted HTTP request body", async () => {
+  const response = await fetch(baseUrl + "/api/jobs/list-match-card-assets", {
+    method: "POST",
+    headers: { authorization: "Bearer " + gptToken },
+  });
+  assert.equal(response.status, 202);
+  const body = await response.json();
+  assert.ok(body.jobId);
+  assert.equal(body.status, "pending");
+});
+
+test("creates a read-only planMatchCard job from the create payload", async () => {
+  const created = await request("/api/jobs/plan-match-card", {
+    body: validCreateMatchCard(),
+  });
+  assert.equal(created.response.status, 202);
+  const job = await getJob(created.body.jobId);
+  assert.equal(job.type, "planMatchCard");
+  assert.equal(job.requiresConfirmation, false);
+});
+
+test("planMatchCard requires authentication and uses strict create validation", async () => {
+  const unauthenticated = await request("/api/jobs/plan-match-card", {
+    authenticated: false,
+    body: validCreateMatchCard(),
+  });
+  assert.equal(unauthenticated.response.status, 401);
+
+  const invalid = await request("/api/jobs/plan-match-card", {
+    body: validCreateMatchCard({ prompt: "generate a wrestler" }),
+  });
+  assert.equal(invalid.response.status, 400);
+});
+
+test("creates a confirmed createMatchCard job", async () => {
+  const created = await request("/api/jobs/create-match-card", {
+    body: validCreateMatchCard(),
+  });
+  assert.equal(created.response.status, 202);
+  assert.equal(created.body.status, "pending");
+  const job = await getJob(created.body.jobId);
+  assert.equal(job.type, "createMatchCard");
+  assert.equal(job.requiresConfirmation, true);
+});
+
+test("createMatchCard accepts every protected local asset role", async () => {
+  const assets = validAssets({
+    competitorCenter: "Center.png",
+    promotionLogo: "Promotion.psd",
+    championshipLogo: "Championship.tif",
+    sponsorLogo: "Sponsor.jpg",
+    suppliedCharacterArtwork: "Character.jpeg",
+    suppliedPhotograph: "Photo.tiff",
+  });
+  const created = await request("/api/jobs/create-match-card", {
+    body: validCreateMatchCard({
+      style: validStyle({ layoutPreset: "three-competitor-title-center" }),
+      assets,
+    }),
+  });
+  assert.equal(created.response.status, 202);
+});
+
+test("createMatchCard requires GPT authentication", async () => {
+  const result = await request("/api/jobs/create-match-card", {
+    authenticated: false,
+    body: validCreateMatchCard(),
+  });
+  assert.equal(result.response.status, 401);
+});
+
+const invalidCreateMatchCardCases = [
+  ["missing templateBackground", validCreateMatchCard({ templateBackground: undefined })],
+  [
+    "missing showLogo",
+    validCreateMatchCard({
+      assets: {
+        competitorLeft: "Breakker.png",
+        competitorRight: "Rage.png",
+      },
+    }),
+  ],
+  [
+    "missing a layout-required competitor",
+    validCreateMatchCard({ assets: validAssets({ competitorRight: undefined }) }),
+  ],
+  [
+    "unsupported layout preset",
+    validCreateMatchCard({ style: validStyle({ layoutPreset: "freeform" }) }),
+  ],
+  [
+    "malformed template extension",
+    validCreateMatchCard({
+      templateBackground: validTemplateBackground({ fileName: "template.png.exe" }),
+    }),
+  ],
+  [
+    "unsupported template fit mode",
+    validCreateMatchCard({
+      templateBackground: validTemplateBackground({ fitMode: "stretch" }),
+    }),
+  ],
+  [
+    "forward-slash traversal",
+    validCreateMatchCard({ assets: validAssets({ competitorLeft: "../Breakker.png" }) }),
+  ],
+  [
+    "backslash directory",
+    validCreateMatchCard({ assets: validAssets({ competitorLeft: "renders\\Breakker.png" }) }),
+  ],
+  [
+    "drive-qualified file name",
+    validCreateMatchCard({ assets: validAssets({ competitorLeft: "C:Breakker.png" }) }),
+  ],
+  [
+    "remote URL",
+    validCreateMatchCard({
+      assets: validAssets({ competitorLeft: "https://example.com/Breakker.png" }),
+    }),
+  ],
+  [
+    "base64 data URI",
+    validCreateMatchCard({
+      assets: validAssets({ competitorLeft: "data:image/png;base64,AAAA" }),
+    }),
+  ],
+  [
+    "null byte in asset file name",
+    validCreateMatchCard({ assets: validAssets({ competitorLeft: "Break\0ker.png" }) }),
+  ],
+  [
+    "reserved device file name",
+    validCreateMatchCard({ assets: validAssets({ competitorLeft: "CON.png" }) }),
+  ],
+  ["invalid canvas width", validCreateMatchCard({ canvas: validCanvas({ width: 319 }) })],
+  [
+    "invalid canvas resolution",
+    validCreateMatchCard({ canvas: validCanvas({ resolution: 35 }) }),
+  ],
+  [
+    "excessive canvas pixels",
+    validCreateMatchCard({ canvas: validCanvas({ width: 8192, height: 8192 }) }),
+  ],
+  [
+    "invalid RGB component",
+    validCreateMatchCard({
+      style: validStyle({ primaryColor: { red: 256, green: 0, blue: 0 } }),
+    }),
+  ],
+  [
+    "non-integer RGB component",
+    validCreateMatchCard({
+      style: validStyle({ primaryColor: { red: 1.5, green: 0, blue: 0 } }),
+    }),
+  ],
+  [
+    "unknown asset role",
+    validCreateMatchCard({ assets: { ...validAssets(), wrestlerLeft: "Other.png" } }),
+  ],
+  [
+    "overlong text field",
+    validCreateMatchCard({ text: validMatchCardText({ venue: "x".repeat(1001) }) }),
+  ],
+  [
+    "excessive total text",
+    validCreateMatchCard({
+      text: {
+        championship: "a".repeat(900),
+        competitorLeftName: "b".repeat(900),
+        competitorRightName: "c".repeat(900),
+        matchTitle: "d".repeat(900),
+        venue: "e".repeat(900),
+        stipulation: "f".repeat(600),
+      },
+    }),
+  ],
+  ["empty text object", validCreateMatchCard({ text: {} })],
+  ["unknown top-level property", validCreateMatchCard({ unexpected: true })],
+  [
+    "unknown nested style property",
+    validCreateMatchCard({ style: validStyle({ photoshopDescriptor: {} }) }),
+  ],
+  [
+    "unknown requested-font role",
+    validCreateMatchCard({ style: validStyle({ fonts: { logo: "Arial" } }) }),
+  ],
+  [
+    "overlong requested font",
+    validCreateMatchCard({ style: validStyle({ fonts: { mainTitle: "x".repeat(101) } }) }),
+  ],
+  [
+    "DEL control character in requested font",
+    validCreateMatchCard({ style: validStyle({ fonts: { mainTitle: "Arial\x7f" } }) }),
+  ],
+  [
+    "invalid normalized placement",
+    validCreateMatchCard({
+      placements: {
+        competitorLeft: { coordinateSpace: "normalized", x: 1.1, y: 0.5 },
+      },
+    }),
+  ],
+  [
+    "invalid implicit normalized placement",
+    validCreateMatchCard({
+      placements: { competitorLeft: { x: 1.1, y: 0.5 } },
+    }),
+  ],
+  [
+    "unpaired placement coordinates",
+    validCreateMatchCard({
+      placements: { competitorLeft: { coordinateSpace: "pixels", x: 100 } },
+    }),
+  ],
+  [
+    "non-integer pixel placement",
+    validCreateMatchCard({
+      placements: {
+        competitorLeft: { coordinateSpace: "pixels", x: 100.5, y: 200 },
+      },
+    }),
+  ],
+  [
+    "unsupported placement fit mode",
+    validCreateMatchCard({
+      placements: { competitorLeft: { fitMode: "stretch" } },
+    }),
+  ],
+  [
+    "unknown placement role",
+    validCreateMatchCard({ placements: { referee: { x: 0.5, y: 0.5 } } }),
+  ],
+  [
+    "placement for an unsupplied asset",
+    validCreateMatchCard({ placements: { sponsorLogo: { x: 0.5, y: 0.5 } } }),
+  ],
+  ["missing output PSD", validCreateMatchCard({ outputPsdName: undefined })],
+  ["missing output preview", validCreateMatchCard({ outputPreviewName: undefined })],
+  ["missing output manifest", validCreateMatchCard({ outputManifestName: undefined })],
+  ["drive-qualified output", validCreateMatchCard({ outputPsdName: "C:output.psd" })],
+  [
+    "output collision with an input asset",
+    validCreateMatchCard({ outputPreviewName: "Breakker.png" }),
+  ],
+  ["caller disables Bale CC", validCreateMatchCard({ baleCcEnabled: false })],
+  ["caller supplies Bale configuration", validCreateMatchCard({ baleCc: { enabled: false } })],
+  ["caller supplies requiresConfirmation", validCreateMatchCard({ requiresConfirmation: false })],
+  ["caller supplies a model prompt", validCreateMatchCard({ prompt: "generate people" })],
+  ["caller supplies base64 content", validCreateMatchCard({ imageBase64: "AAAA" })],
+  ["caller supplies an arbitrary script", validCreateMatchCard({ script: "alert('x')" })],
+  [
+    "caller supplies an arbitrary Photoshop descriptor",
+    validCreateMatchCard({ photoshopDescriptor: { _obj: "placeEvent" } }),
+  ],
+];
+
+for (const [name, body] of invalidCreateMatchCardCases) {
+  test(`createMatchCard rejects ${name}`, async () => {
+    const result = await request("/api/jobs/create-match-card", { body });
+    assert.equal(result.response.status, 400);
+    assert.equal(result.body.error, "Invalid request");
+  });
+}
+
+test("creates a confirmed updateMatchCard job", async () => {
+  const created = await request("/api/jobs/update-match-card", {
+    body: validUpdateMatchCard(),
+  });
+  assert.equal(created.response.status, 202);
+  const job = await getJob(created.body.jobId);
+  assert.equal(job.type, "updateMatchCard");
+  assert.equal(job.requiresConfirmation, true);
+});
+
+test("updateMatchCard accepts an explicit local template replacement", async () => {
+  const created = await request("/api/jobs/update-match-card", {
+    body: validUpdateMatchCard({
+      changes: {
+        templateBackground: {
+          fileName: "ECCW_Breakker_vs_Rage_template_bg_v2.png",
+          fitMode: "cover",
+        },
+      },
+    }),
+  });
+  assert.equal(created.response.status, 202);
+});
+
+test("updateMatchCard requires GPT authentication", async () => {
+  const result = await request("/api/jobs/update-match-card", {
+    authenticated: false,
+    body: validUpdateMatchCard(),
+  });
+  assert.equal(result.response.status, 401);
+});
+
+const invalidUpdateMatchCardCases = [
+  [
+    "invalid manifest extension",
+    validUpdateMatchCard({ manifestFileName: "ECCW_Breakker_vs_Rage_v1.json" }),
+  ],
+  [
+    "manifest traversal",
+    validUpdateMatchCard({ manifestFileName: "../ECCW_v1.matchcard.json" }),
+  ],
+  [
+    "drive-qualified manifest",
+    validUpdateMatchCard({ manifestFileName: "C:ECCW_v1.matchcard.json" }),
+  ],
+  [
+    "invalid replacement asset",
+    validUpdateMatchCard({ changes: { assets: { competitorRight: "Rage.gif" } } }),
+  ],
+  [
+    "replacement asset traversal",
+    validUpdateMatchCard({ changes: { assets: { competitorRight: "../Rage.png" } } }),
+  ],
+  [
+    "remote replacement asset",
+    validUpdateMatchCard({
+      changes: { assets: { competitorRight: "https://example.com/Rage.png" } },
+    }),
+  ],
+  [
+    "unknown asset role",
+    validUpdateMatchCard({ changes: { assets: { replacementLogo: "Logo.png" } } }),
+  ],
+  [
+    "unknown semantic visibility role",
+    validUpdateMatchCard({
+      changes: { visibility: [{ role: "Layer 9", visible: false }] },
+    }),
+  ],
+  [
+    "Bale visibility control",
+    validUpdateMatchCard({
+      changes: { visibility: [{ role: "baleCc", visible: false }] },
+    }),
+  ],
+  [
+    "duplicate visibility role",
+    validUpdateMatchCard({
+      changes: {
+        visibility: [
+          { role: "showLogo", visible: true },
+          { role: "showLogo", visible: false },
+        ],
+      },
+    }),
+  ],
+  [
+    "unknown placement role",
+    validUpdateMatchCard({ changes: { placements: { referee: { x: 0.5, y: 0.5 } } } }),
+  ],
+  [
+    "invalid placement bounds",
+    validUpdateMatchCard({
+      changes: {
+        placements: {
+          competitorRight: { coordinateSpace: "normalized", maxWidth: 1.1 },
+        },
+      },
+    }),
+  ],
+  [
+    "incoherent inherited placement values",
+    validUpdateMatchCard({
+      changes: { placements: { competitorRight: { x: 0.5, y: 200 } } },
+    }),
+  ],
+  [
+    "invalid theme color",
+    validUpdateMatchCard({
+      changes: { style: { accentColor: { red: -1, green: 0, blue: 0 } } },
+    }),
+  ],
+  [
+    "unknown update font role",
+    validUpdateMatchCard({ changes: { style: { fonts: { logo: "Arial" } } } }),
+  ],
+  [
+    "overlong update text",
+    validUpdateMatchCard({ changes: { text: { venue: "x".repeat(1001) } } }),
+  ],
+  ["empty changes", validUpdateMatchCard({ changes: {} })],
+  [
+    "source manifest overwrite",
+    validUpdateMatchCard({ outputManifestName: "ECCW_Breakker_vs_Rage_v1.matchcard.json" }),
+  ],
+  ["output path traversal", validUpdateMatchCard({ outputPsdName: "../ECCW_v2.psd" })],
+  ["missing output name", validUpdateMatchCard({ outputPreviewName: undefined })],
+  ["unknown top-level property", validUpdateMatchCard({ unexpected: true })],
+  [
+    "unknown changes property",
+    validUpdateMatchCard({ changes: { arbitraryLayers: [{ name: "Layer 1" }] } }),
+  ],
+  ["caller disables Bale CC", validUpdateMatchCard({ baleCcEnabled: false })],
+  [
+    "caller supplies a script",
+    validUpdateMatchCard({ changes: { script: "app.activeDocument.flatten()" } }),
+  ],
+  [
+    "caller supplies a model prompt",
+    validUpdateMatchCard({ changes: { prompt: "regenerate the wrestler" } }),
+  ],
+];
+
+for (const [name, body] of invalidUpdateMatchCardCases) {
+  test(`updateMatchCard rejects ${name}`, async () => {
+    const result = await request("/api/jobs/update-match-card", { body });
+    assert.equal(result.response.status, 400);
+    assert.equal(result.body.error, "Invalid request");
+  });
 }
 
 test("creates a confirmed recolorLayers job", async () => {
@@ -394,4 +1179,26 @@ test("existing Smart Object replacement endpoint still creates a job", async () 
   });
   assert.equal(result.response.status, 202);
   assert.ok(result.body.jobId);
+});
+
+test("existing inspect and Smart Object routes reject unknown properties", async () => {
+  const inspect = await request("/api/jobs/inspect-document", {
+    body: { documentName: "MatchCard.psd", script: "ignored-before-hardening" },
+  });
+  assert.equal(inspect.response.status, 400);
+  assert.equal(inspect.body.error, "Invalid request");
+
+  const replacement = await request("/api/jobs/replace-smart-object", {
+    body: {
+      documentName: "MatchCard.psd",
+      layerId: 123,
+      replacementFileName: "ECCW.png",
+      fitMode: "contain",
+      outputPsdName: "MatchCard_ECCW_v1.psd",
+      outputPreviewName: "MatchCard_ECCW_v1.png",
+      photoshopDescriptor: {},
+    },
+  });
+  assert.equal(replacement.response.status, 400);
+  assert.equal(replacement.body.error, "Invalid request");
 });

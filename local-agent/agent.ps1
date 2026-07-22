@@ -64,12 +64,30 @@ $config = Read-DotEnv -Path $EnvPath
 $relayUrl = (Require-ConfigValue -Config $config -Name "RELAY_URL").TrimEnd("/")
 $deviceToken = Require-ConfigValue -Config $config -Name "PHOTOSHOP_DEVICE_TOKEN"
 $workingFolder = Require-ConfigValue -Config $config -Name "WORKING_FOLDER"
+$baleCcPackageFile = if ($config.ContainsKey("BALE_CC_PACKAGE_FILE")) { [string]$config["BALE_CC_PACKAGE_FILE"] } else { "" }
+$baleCcGroupName = if ($config.ContainsKey("BALE_CC_GROUP_NAME")) { [string]$config["BALE_CC_GROUP_NAME"] } else { "" }
 $pollSeconds = if ($config.ContainsKey("POLL_SECONDS")) { [Math]::Max(1, [int]$config["POLL_SECONDS"]) } else { 2 }
 
 if (-not ($relayUrl -match "^https://") -and -not ($relayUrl -match "^http://(localhost|127\.0\.0\.1)(:\d+)?$")) {
     throw "RELAY_URL must use HTTPS, except localhost during local testing."
 }
 if ($deviceToken.Length -lt 24) { throw "PHOTOSHOP_DEVICE_TOKEN should be at least 24 characters." }
+if (-not [string]::IsNullOrWhiteSpace($baleCcPackageFile)) {
+    if (
+        $baleCcPackageFile.Length -gt 255 -or
+        $baleCcPackageFile -match '[\\/\x00-\x1f<>:"|?*]' -or
+        $baleCcPackageFile.Contains("..") -or
+        $baleCcPackageFile.StartsWith(".") -or
+        -not $baleCcPackageFile.EndsWith(".psd", [StringComparison]::OrdinalIgnoreCase)
+    ) {
+        throw "BALE_CC_PACKAGE_FILE must be a plain .psd filename without a path."
+    }
+}
+if (-not [string]::IsNullOrWhiteSpace($baleCcGroupName)) {
+    if ($baleCcGroupName.Length -gt 255 -or $baleCcGroupName.IndexOf([char]0) -ge 0) {
+        throw "BALE_CC_GROUP_NAME must contain 1 through 255 safe characters."
+    }
+}
 if (-not (Test-Path -LiteralPath $workingFolder -PathType Container)) {
     New-Item -ItemType Directory -Path $workingFolder -Force | Out-Null
     Write-BridgeLog "Created working folder: $workingFolder" "OK"
@@ -77,7 +95,29 @@ if (-not (Test-Path -LiteralPath $workingFolder -PathType Container)) {
 
 $workerPath = Join-Path $ScriptDirectory "bridge-worker.jsx"
 if (-not (Test-Path -LiteralPath $workerPath -PathType Leaf)) { throw "Missing worker script: $workerPath" }
-$headers = @{ "x-device-token" = $deviceToken }
+$headers = @{
+    "x-device-token" = $deviceToken
+    "x-photoshop-bridge-agent" = "powershell-v1"
+}
+
+# The local agent, not the relay payload, is the final authority on which
+# operations require typed approval. Unknown operation types fail closed.
+$readOnlyJobTypes = @(
+    "inspectDocument",
+    "exportDocumentPreview",
+    "exportLayerPreviews",
+    "listMatchCardAssets",
+    "planMatchCard"
+)
+$writeJobTypes = @(
+    "replaceSmartObject",
+    "recolorLayers",
+    "updateTextLayers",
+    "renameLayers",
+    "createMatchCard",
+    "updateMatchCard"
+)
+$baleConfigRequiredJobTypes = @("createMatchCard", "updateMatchCard")
 
 function Invoke-Relay {
     param(
@@ -124,7 +164,18 @@ function Invoke-PhotoshopJob {
         $outputPath = Join-Path $tempRoot "output.json"
         $wrapperPath = Join-Path $tempRoot "run-job.jsx"
 
-        @{ type = [string]$Job.type; payload = $Job.payload; workingFolder = (Resolve-Path -LiteralPath $workingFolder).Path } |
+        $workerInput = @{
+            type = [string]$Job.type
+            payload = $Job.payload
+            workingFolder = (Resolve-Path -LiteralPath $workingFolder).Path
+        }
+        if (-not [string]::IsNullOrWhiteSpace($baleCcPackageFile)) {
+            $workerInput["baleCcPackageFile"] = $baleCcPackageFile
+        }
+        if (-not [string]::IsNullOrWhiteSpace($baleCcGroupName)) {
+            $workerInput["baleCcGroupName"] = $baleCcGroupName
+        }
+        $workerInput |
             ConvertTo-Json -Depth 40 |
             Set-Content -LiteralPath $inputPath -Encoding UTF8
 
@@ -165,6 +216,10 @@ $photoshop = New-Object -ComObject Photoshop.Application
 Write-BridgeLog "Photoshop $($photoshop.Version) connected." "OK"
 Write-BridgeLog "Relay: $relayUrl"
 Write-BridgeLog "Working folder: $workingFolder"
+Write-BridgeLog "Agent capability: powershell-v1"
+if ([string]::IsNullOrWhiteSpace($baleCcPackageFile) -or [string]::IsNullOrWhiteSpace($baleCcGroupName)) {
+    Write-BridgeLog "Bale CC settings are not complete; createMatchCard and updateMatchCard will fail until configured." "WARN"
+}
 Write-BridgeLog "Polling every $pollSeconds second(s). Press Ctrl+C to stop."
 
 while ($true) {
@@ -196,8 +251,35 @@ if (
     continue
 }
 
-Write-BridgeLog "Claimed $($job.type) job $($job.id)" "OK"
-        if ($job.requiresConfirmation -and -not (Confirm-WriteJob -Job $job)) {
+        $jobType = [string]$job.type
+        $isReadOnlyJob = $readOnlyJobTypes -contains $jobType
+        $isWriteJob = $writeJobTypes -contains $jobType
+        if (-not $isReadOnlyJob -and -not $isWriteJob) {
+            Fail-Job -JobId $job.id -ErrorMessage "Unsupported operation type rejected by the local Photoshop agent: $jobType"
+            Write-BridgeLog "Rejected unsupported job type: $jobType" "WARN"
+            continue
+        }
+
+        if ($propertyNames -contains "executor") {
+            $executor = [string]$job.executor
+            if ($executor -ne "any" -and $executor -ne "powershell-v1") {
+                Fail-Job -JobId $job.id -ErrorMessage "Unexpected executor rejected by the local Photoshop agent: $executor"
+                Write-BridgeLog "Rejected job for unexpected executor: $executor" "WARN"
+                continue
+            }
+        }
+
+        if (
+            $baleConfigRequiredJobTypes -contains $jobType -and
+            ([string]::IsNullOrWhiteSpace($baleCcPackageFile) -or [string]::IsNullOrWhiteSpace($baleCcGroupName))
+        ) {
+            Fail-Job -JobId $job.id -ErrorMessage "BALE_CC_PACKAGE_FILE and BALE_CC_GROUP_NAME must be configured locally before running this operation."
+            Write-BridgeLog "Rejected $jobType because Bale CC is not configured." "WARN"
+            continue
+        }
+
+        Write-BridgeLog "Claimed $jobType job $($job.id)" "OK"
+        if ($isWriteJob -and -not (Confirm-WriteJob -Job $job)) {
             Fail-Job -JobId $job.id -ErrorMessage "Rejected by user in the local Photoshop agent."
             Write-BridgeLog "Job rejected." "WARN"
             continue

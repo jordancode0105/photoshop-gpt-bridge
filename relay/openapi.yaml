@@ -1,11 +1,11 @@
 openapi: 3.1.0
 info:
   title: Private Photoshop Bridge
-  version: 0.2.0
+  version: 0.3.0
   description: >
     Queues narrowly scoped Photoshop jobs for a local agent. Inspection and
-    preview export are read-only. Smart Object replacement, layer recoloring,
-    text updates, and layer renaming require local approval and save a new PSD copy.
+    previews plus match-card inventory and planning are read-only. All write
+    operations require local approval and preserve prior documents and outputs.
 servers:
   - url: https://photoshop-gpt-bridge.onrender.com
 security:
@@ -452,6 +452,112 @@ paths:
         "401":
           $ref: "#/components/responses/Error"
 
+  /api/jobs/list-match-card-assets:
+    post:
+      operationId: listPhotoshopMatchCardAssets
+      summary: List supported match-card files in the approved working folder
+      description: >
+        Queue a read-only, non-recursive inventory of the approved local working
+        folder. The result contains safe file metadata and plain filenames, never
+        full local paths. No local confirmation is required. A successful status
+        result follows MatchCardAssetInventoryResult.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/EmptyObject"
+            example: {}
+      responses:
+        "202":
+          description: Read-only asset inventory queued
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QueuedJob"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+
+  /api/jobs/plan-match-card:
+    post:
+      operationId: planPhotoshopMatchCard
+      summary: Validate and plan a complete match card without editing Photoshop
+      description: >
+        Validate existing local assets, Bale CC, semantic layers, text mappings,
+        and new output names. The template PNG must already be in the approved
+        working folder. Planning is read-only and needs no local confirmation.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateMatchCardRequest"
+      responses:
+        "202":
+          description: Read-only match-card plan queued
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QueuedJob"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+
+  /api/jobs/create-match-card:
+    post:
+      operationId: createPhotoshopMatchCard
+      summary: Build an editable match card from verified local assets
+      description: >
+        Queue one transactional Photoshop write using an existing local template
+        PNG and supplied production assets. Bale CC is mandatory. The user must
+        type exact YES in the PowerShell agent before execution.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateMatchCardRequest"
+      responses:
+        "202":
+          description: Match-card creation queued for exact local approval
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QueuedJob"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+
+  /api/jobs/update-match-card:
+    post:
+      operationId: updatePhotoshopMatchCard
+      summary: Create a versioned update using a match-card manifest
+      description: >
+        Queue a transactional semantic-role update from an existing local
+        manifest. Prior outputs and Bale CC are preserved. New PSD, PNG, and
+        manifest names are required, followed by exact YES in the PowerShell agent.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateMatchCardRequest"
+      responses:
+        "202":
+          description: Match-card update queued for exact local approval
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QueuedJob"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+
   /api/jobs/{jobId}:
     get:
       operationId: getPhotoshopJobStatus
@@ -482,6 +588,781 @@ components:
       scheme: bearer
 
   schemas:
+    EmptyObject:
+      type: object
+      additionalProperties: false
+
+    PlainFileName:
+      type: string
+      minLength: 3
+      maxLength: 255
+      pattern: '^(?!\.)(?!.*\.\.)(?![A-Za-z]:)(?![A-Za-z][A-Za-z0-9+.-]*:)(?!(?:[Cc][Oo][Nn]|[Pp][Rr][Nn]|[Aa][Uu][Xx]|[Nn][Uu][Ll]|[Cc][Oo][Mm][1-9]|[Ll][Pp][Tt][1-9])(?:\.|$))[^\\/\x00-\x1F<>:"|?*]+$'
+      description: Plain top-level working-folder filename; no path, URL, data URI, traversal, control character, or reserved device name.
+
+    SupportedAssetFileName:
+      allOf:
+        - $ref: "#/components/schemas/PlainFileName"
+        - type: string
+          pattern: '[^. ]\.(?:[Pp][Nn][Gg]|[Jj][Pp][Gg]|[Jj][Pp][Ee][Gg]|[Pp][Ss][Dd]|[Tt][Ii][Ff]|[Tt][Ii][Ff][Ff])$'
+      description: Existing PNG, JPEG, PSD, or TIFF file in the approved working folder.
+
+    TemplateBackgroundFileName:
+      allOf:
+        - $ref: "#/components/schemas/PlainFileName"
+        - type: string
+          pattern: '[^. ]\.[Pp][Nn][Gg]$'
+      description: Existing blank template PNG manually saved in the approved working folder.
+
+    PsdFileName:
+      allOf:
+        - $ref: "#/components/schemas/PlainFileName"
+        - type: string
+          pattern: '[^. ]\.[Pp][Ss][Dd]$'
+      description: Plain PSD filename in the approved working folder.
+
+    PsdOutputFileName:
+      allOf:
+        - $ref: "#/components/schemas/PsdFileName"
+      description: New versioned PSD filename; an existing file is never overwritten.
+
+    PngOutputFileName:
+      allOf:
+        - $ref: "#/components/schemas/PlainFileName"
+        - type: string
+          pattern: '[^. ]\.[Pp][Nn][Gg]$'
+      description: New versioned PNG filename; an existing file is never overwritten.
+
+    ManifestFileName:
+      allOf:
+        - $ref: "#/components/schemas/PlainFileName"
+        - type: string
+          pattern: '[^. ]\.[Mm][Aa][Tt][Cc][Hh][Cc][Aa][Rr][Dd]\.[Jj][Ss][Oo][Nn]$'
+      description: Plain match-card manifest filename in the approved working folder.
+
+    MatchCardAssetMetadata:
+      type: object
+      additionalProperties: false
+      required:
+        - fileName
+        - extension
+        - fileSizeBytes
+        - width
+        - height
+        - isPsd
+        - isPngOrJpeg
+        - suggestedRole
+        - matchesConfiguredBaleCcPackage
+        - appearsSuitableAsTemplateBackground
+      properties:
+        fileName:
+          $ref: "#/components/schemas/SupportedAssetFileName"
+        extension:
+          type: string
+          enum: [.png, .jpg, .jpeg, .psd, .tif, .tiff]
+        fileSizeBytes:
+          type: integer
+          minimum: 0
+          maximum: 9007199254740991
+        width:
+          type: [number, "null"]
+          minimum: 0
+        height:
+          type: [number, "null"]
+          minimum: 0
+        isPsd:
+          type: boolean
+        isPngOrJpeg:
+          type: boolean
+        suggestedRole:
+          enum:
+            - competitorLeft
+            - competitorRight
+            - competitorCenter
+            - showLogo
+            - promotionLogo
+            - championshipLogo
+            - beltImage
+            - sponsorLogo
+            - venueLogo
+            - suppliedCharacterArtwork
+            - suppliedPhotograph
+            - baleCcPackage
+            - templateBackground
+            - null
+        matchesConfiguredBaleCcPackage:
+          type: boolean
+        appearsSuitableAsTemplateBackground:
+          type: boolean
+
+    MatchCardAssetInventoryResult:
+      type: object
+      additionalProperties: false
+      required:
+        - assets
+        - baleCcConfigured
+        - baleCcPackageFileName
+        - supportedExtensions
+        - recursive
+      properties:
+        assets:
+          type: array
+          items:
+            $ref: "#/components/schemas/MatchCardAssetMetadata"
+        baleCcConfigured:
+          type: boolean
+        baleCcPackageFileName:
+          oneOf:
+            - $ref: "#/components/schemas/PsdFileName"
+            - type: "null"
+          description: Configured Bale CC package filename when available; never a local path.
+        supportedExtensions:
+          type: array
+          minItems: 6
+          maxItems: 6
+          prefixItems:
+            - const: .png
+            - const: .jpg
+            - const: .jpeg
+            - const: .psd
+            - const: .tif
+            - const: .tiff
+          items: false
+        recursive:
+          const: false
+
+    RgbColor:
+      type: object
+      additionalProperties: false
+      required: [red, green, blue]
+      properties:
+        red:
+          type: integer
+          minimum: 0
+          maximum: 255
+        green:
+          type: integer
+          minimum: 0
+          maximum: 255
+        blue:
+          type: integer
+          minimum: 0
+          maximum: 255
+
+    MatchCardCanvas:
+      type: object
+      additionalProperties: false
+      required: [width, height, resolution]
+      description: Width times height must not exceed 40,000,000 pixels.
+      properties:
+        width:
+          type: integer
+          minimum: 320
+          maximum: 8192
+        height:
+          type: integer
+          minimum: 320
+          maximum: 8192
+        resolution:
+          type: integer
+          minimum: 36
+          maximum: 600
+
+    TemplateBackground:
+      type: object
+      additionalProperties: false
+      required: [fileName]
+      properties:
+        fileName:
+          $ref: "#/components/schemas/TemplateBackgroundFileName"
+        fitMode:
+          type: string
+          enum: [contain, cover]
+          default: cover
+
+    FontPreferences:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      description: Optional installed-font preferences. Unavailable fonts produce warnings and safe fallbacks.
+      properties:
+        mainTitle:
+          $ref: "#/components/schemas/FontName"
+        championshipLabel:
+          $ref: "#/components/schemas/FontName"
+        competitorNames:
+          $ref: "#/components/schemas/FontName"
+        stipulation:
+          $ref: "#/components/schemas/FontName"
+        date:
+          $ref: "#/components/schemas/FontName"
+        time:
+          $ref: "#/components/schemas/FontName"
+        venue:
+          $ref: "#/components/schemas/FontName"
+
+    FontName:
+      type: string
+      minLength: 1
+      maxLength: 100
+      pattern: '^[^\x00-\x1F\x7F]+$'
+
+    CreateMatchCardStyle:
+      type: object
+      additionalProperties: false
+      required:
+        - description
+        - primaryColor
+        - secondaryColor
+        - accentColor
+        - metallicColor
+        - layoutPreset
+      properties:
+        description:
+          type: string
+          minLength: 1
+          maxLength: 500
+          pattern: '^[^\x00]*$'
+          description: Non-generative visual direction used only by the deterministic Photoshop worker.
+        primaryColor:
+          $ref: "#/components/schemas/RgbColor"
+        secondaryColor:
+          $ref: "#/components/schemas/RgbColor"
+        accentColor:
+          $ref: "#/components/schemas/RgbColor"
+        metallicColor:
+          $ref: "#/components/schemas/RgbColor"
+        layoutPreset:
+          type: string
+          enum:
+            - two-competitor-title-center
+            - two-competitor-title-lower
+            - three-competitor-title-center
+            - single-competitor-title-side
+        fonts:
+          $ref: "#/components/schemas/FontPreferences"
+
+    UpdateMatchCardStyle:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        primaryColor:
+          $ref: "#/components/schemas/RgbColor"
+        secondaryColor:
+          $ref: "#/components/schemas/RgbColor"
+        accentColor:
+          $ref: "#/components/schemas/RgbColor"
+        metallicColor:
+          $ref: "#/components/schemas/RgbColor"
+        fonts:
+          $ref: "#/components/schemas/FontPreferences"
+
+    CreateMatchCardAssets:
+      type: object
+      additionalProperties: false
+      required: [showLogo]
+      description: Layout preset determines required competitor roles. Every value must already exist locally.
+      properties:
+        competitorLeft:
+          $ref: "#/components/schemas/SupportedAssetFileName"
+        competitorRight:
+          $ref: "#/components/schemas/SupportedAssetFileName"
+        competitorCenter:
+          $ref: "#/components/schemas/SupportedAssetFileName"
+        showLogo:
+          $ref: "#/components/schemas/SupportedAssetFileName"
+        promotionLogo:
+          $ref: "#/components/schemas/SupportedAssetFileName"
+        championshipLogo:
+          $ref: "#/components/schemas/SupportedAssetFileName"
+        beltImage:
+          $ref: "#/components/schemas/SupportedAssetFileName"
+        sponsorLogo:
+          $ref: "#/components/schemas/SupportedAssetFileName"
+        venueLogo:
+          $ref: "#/components/schemas/SupportedAssetFileName"
+        suppliedCharacterArtwork:
+          $ref: "#/components/schemas/SupportedAssetFileName"
+        suppliedPhotograph:
+          $ref: "#/components/schemas/SupportedAssetFileName"
+
+    UpdateMatchCardAssets:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        competitorLeft:
+          $ref: "#/components/schemas/SupportedAssetFileName"
+        competitorRight:
+          $ref: "#/components/schemas/SupportedAssetFileName"
+        competitorCenter:
+          $ref: "#/components/schemas/SupportedAssetFileName"
+        showLogo:
+          $ref: "#/components/schemas/SupportedAssetFileName"
+        promotionLogo:
+          $ref: "#/components/schemas/SupportedAssetFileName"
+        championshipLogo:
+          $ref: "#/components/schemas/SupportedAssetFileName"
+        beltImage:
+          $ref: "#/components/schemas/SupportedAssetFileName"
+        sponsorLogo:
+          $ref: "#/components/schemas/SupportedAssetFileName"
+        venueLogo:
+          $ref: "#/components/schemas/SupportedAssetFileName"
+        suppliedCharacterArtwork:
+          $ref: "#/components/schemas/SupportedAssetFileName"
+        suppliedPhotograph:
+          $ref: "#/components/schemas/SupportedAssetFileName"
+
+    MatchCardText:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      description: At least one field is required; each is at most 1,000 characters and the total is at most 5,000. Line breaks are preserved.
+      properties:
+        championship:
+          $ref: "#/components/schemas/MatchCardTextValue"
+        competitorLeftName:
+          $ref: "#/components/schemas/MatchCardTextValue"
+        competitorRightName:
+          $ref: "#/components/schemas/MatchCardTextValue"
+        competitorCenterName:
+          $ref: "#/components/schemas/MatchCardTextValue"
+        matchTitle:
+          $ref: "#/components/schemas/MatchCardTextValue"
+        stipulation:
+          $ref: "#/components/schemas/MatchCardTextValue"
+        date:
+          $ref: "#/components/schemas/MatchCardTextValue"
+        time:
+          $ref: "#/components/schemas/MatchCardTextValue"
+        venue:
+          $ref: "#/components/schemas/MatchCardTextValue"
+
+    MatchCardTextValue:
+      type: string
+      maxLength: 1000
+      pattern: '^[^\x00]*$'
+
+    AssetPlacement:
+      type: object
+      additionalProperties: false
+      dependentRequired:
+        x: [y]
+        y: [x]
+      description: Normalized coordinates and bounds are 0..1. Pixel values are validated integers. New placements default to normalized when coordinateSpace is omitted.
+      properties:
+        coordinateSpace:
+          type: string
+          enum: [normalized, pixels]
+        x:
+          type: number
+        y:
+          type: number
+        fitMode:
+          type: string
+          enum: [contain, cover, keep-transform]
+        scale:
+          type: number
+          minimum: 0.05
+          maximum: 10
+          description: Absolute multiplier relative to the selected fit baseline; update patches preserve the prior value when omitted.
+        maxWidth:
+          type: number
+          exclusiveMinimum: 0
+        maxHeight:
+          type: number
+          exclusiveMinimum: 0
+        clippingMask:
+          type: boolean
+        nonGenerativeMask:
+          type: boolean
+        dropShadow:
+          type: boolean
+        outerGlow:
+          type: boolean
+      allOf:
+        - if:
+            properties:
+              coordinateSpace:
+                const: pixels
+            required: [coordinateSpace]
+          then:
+            properties:
+              x:
+                type: integer
+                minimum: -16384
+                maximum: 16384
+              y:
+                type: integer
+                minimum: -16384
+                maximum: 16384
+              maxWidth:
+                type: integer
+                exclusiveMinimum: 0
+                maximum: 16384
+              maxHeight:
+                type: integer
+                exclusiveMinimum: 0
+                maximum: 16384
+          else:
+            properties:
+              x:
+                type: number
+                minimum: 0
+                maximum: 1
+              y:
+                type: number
+                minimum: 0
+                maximum: 1
+              maxWidth:
+                type: number
+                exclusiveMinimum: 0
+                maximum: 1
+              maxHeight:
+                type: number
+                exclusiveMinimum: 0
+                maximum: 1
+
+    UpdateAssetPlacement:
+      type: object
+      additionalProperties: false
+      dependentRequired:
+        x: [y]
+        y: [x]
+      description: Patch values inherit the manifest coordinate space when omitted and must form one valid normalized or pixel-space set. Other omitted fields are preserved.
+      properties:
+        coordinateSpace:
+          type: string
+          enum: [normalized, pixels]
+        x:
+          type: number
+        y:
+          type: number
+        fitMode:
+          type: string
+          enum: [contain, cover, keep-transform]
+        scale:
+          type: number
+          minimum: 0.05
+          maximum: 10
+          description: Absolute multiplier relative to the selected fit baseline; the prior value is preserved when omitted.
+        maxWidth:
+          type: number
+          exclusiveMinimum: 0
+        maxHeight:
+          type: number
+          exclusiveMinimum: 0
+        clippingMask:
+          type: boolean
+        nonGenerativeMask:
+          type: boolean
+        dropShadow:
+          type: boolean
+        outerGlow:
+          type: boolean
+      allOf:
+        - if:
+            properties:
+              coordinateSpace:
+                const: normalized
+            required: [coordinateSpace]
+          then:
+            properties:
+              x: { type: number, minimum: 0, maximum: 1 }
+              y: { type: number, minimum: 0, maximum: 1 }
+              maxWidth: { type: number, exclusiveMinimum: 0, maximum: 1 }
+              maxHeight: { type: number, exclusiveMinimum: 0, maximum: 1 }
+        - if:
+            properties:
+              coordinateSpace:
+                const: pixels
+            required: [coordinateSpace]
+          then:
+            properties:
+              x: { type: integer, minimum: -16384, maximum: 16384 }
+              y: { type: integer, minimum: -16384, maximum: 16384 }
+              maxWidth: { type: integer, minimum: 1, maximum: 16384 }
+              maxHeight: { type: integer, minimum: 1, maximum: 16384 }
+        - if:
+            not:
+              required: [coordinateSpace]
+          then:
+            anyOf:
+              - properties:
+                  x: { type: number, minimum: 0, maximum: 1 }
+                  y: { type: number, minimum: 0, maximum: 1 }
+                  maxWidth: { type: number, exclusiveMinimum: 0, maximum: 1 }
+                  maxHeight: { type: number, exclusiveMinimum: 0, maximum: 1 }
+              - properties:
+                  x: { type: integer, minimum: -16384, maximum: 16384 }
+                  y: { type: integer, minimum: -16384, maximum: 16384 }
+                  maxWidth: { type: integer, minimum: 1, maximum: 16384 }
+                  maxHeight: { type: integer, minimum: 1, maximum: 16384 }
+
+    AssetPlacements:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      description: Overrides are allowed only for supplied protected asset roles.
+      properties:
+        competitorLeft:
+          $ref: "#/components/schemas/AssetPlacement"
+        competitorRight:
+          $ref: "#/components/schemas/AssetPlacement"
+        competitorCenter:
+          $ref: "#/components/schemas/AssetPlacement"
+        showLogo:
+          $ref: "#/components/schemas/AssetPlacement"
+        promotionLogo:
+          $ref: "#/components/schemas/AssetPlacement"
+        championshipLogo:
+          $ref: "#/components/schemas/AssetPlacement"
+        beltImage:
+          $ref: "#/components/schemas/AssetPlacement"
+        sponsorLogo:
+          $ref: "#/components/schemas/AssetPlacement"
+        venueLogo:
+          $ref: "#/components/schemas/AssetPlacement"
+        suppliedCharacterArtwork:
+          $ref: "#/components/schemas/AssetPlacement"
+        suppliedPhotograph:
+          $ref: "#/components/schemas/AssetPlacement"
+
+    UpdateAssetPlacements:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      description: Partial placement changes for existing or explicitly replaced protected assets.
+      properties:
+        competitorLeft:
+          $ref: "#/components/schemas/UpdateAssetPlacement"
+        competitorRight:
+          $ref: "#/components/schemas/UpdateAssetPlacement"
+        competitorCenter:
+          $ref: "#/components/schemas/UpdateAssetPlacement"
+        showLogo:
+          $ref: "#/components/schemas/UpdateAssetPlacement"
+        promotionLogo:
+          $ref: "#/components/schemas/UpdateAssetPlacement"
+        championshipLogo:
+          $ref: "#/components/schemas/UpdateAssetPlacement"
+        beltImage:
+          $ref: "#/components/schemas/UpdateAssetPlacement"
+        sponsorLogo:
+          $ref: "#/components/schemas/UpdateAssetPlacement"
+        venueLogo:
+          $ref: "#/components/schemas/UpdateAssetPlacement"
+        suppliedCharacterArtwork:
+          $ref: "#/components/schemas/UpdateAssetPlacement"
+        suppliedPhotograph:
+          $ref: "#/components/schemas/UpdateAssetPlacement"
+
+    VisibilityChange:
+      type: object
+      additionalProperties: false
+      required: [role, visible]
+      properties:
+        role:
+          type: string
+          enum:
+            - templateBackground
+            - atmosphere
+            - framesAndPanels
+            - competitorRenders
+            - championshipAndBelt
+            - matchTitleGroup
+            - eventInformation
+            - showLogoGroup
+            - finishingEffects
+            - competitorLeft
+            - competitorRight
+            - competitorCenter
+            - showLogo
+            - promotionLogo
+            - championshipLogo
+            - beltImage
+            - sponsorLogo
+            - venueLogo
+            - suppliedCharacterArtwork
+            - suppliedPhotograph
+            - championship
+            - competitorLeftName
+            - competitorRightName
+            - competitorCenterName
+            - matchTitle
+            - stipulation
+            - date
+            - time
+            - venue
+        visible:
+          type: boolean
+
+    CreateMatchCardRequest:
+      type: object
+      additionalProperties: false
+      description: Output PSD and PNG names must not reuse the template or any supplied asset filename.
+      required:
+        - briefName
+        - canvas
+        - templateBackground
+        - style
+        - assets
+        - text
+        - outputPsdName
+        - outputPreviewName
+        - outputManifestName
+      properties:
+        briefName:
+          type: string
+          minLength: 1
+          maxLength: 200
+          pattern: '^[^\x00]*$'
+        canvas:
+          $ref: "#/components/schemas/MatchCardCanvas"
+        templateBackground:
+          $ref: "#/components/schemas/TemplateBackground"
+        style:
+          $ref: "#/components/schemas/CreateMatchCardStyle"
+        assets:
+          $ref: "#/components/schemas/CreateMatchCardAssets"
+        text:
+          $ref: "#/components/schemas/MatchCardText"
+        placements:
+          $ref: "#/components/schemas/AssetPlacements"
+        outputPsdName:
+          $ref: "#/components/schemas/PsdOutputFileName"
+        outputPreviewName:
+          $ref: "#/components/schemas/PngOutputFileName"
+        outputManifestName:
+          $ref: "#/components/schemas/ManifestFileName"
+      allOf:
+        - if:
+            properties:
+              style:
+                properties:
+                  layoutPreset:
+                    enum: [two-competitor-title-center, two-competitor-title-lower]
+          then:
+            properties:
+              assets:
+                required: [competitorLeft, competitorRight, showLogo]
+        - if:
+            properties:
+              style:
+                properties:
+                  layoutPreset:
+                    const: three-competitor-title-center
+          then:
+            properties:
+              assets:
+                required: [competitorLeft, competitorRight, competitorCenter, showLogo]
+        - if:
+            properties:
+              style:
+                properties:
+                  layoutPreset:
+                    const: single-competitor-title-side
+          then:
+            properties:
+              assets:
+                required: [competitorCenter, showLogo]
+      example:
+        briefName: ECCW Breakker vs Rage
+        canvas:
+          width: 1920
+          height: 1080
+          resolution: 72
+        templateBackground:
+          fileName: ECCW_Breakker_vs_Rage_template_bg_v1.png
+          fitMode: cover
+        style:
+          description: premium red black white wrestling broadcast presentation
+          primaryColor: { red: 190, green: 0, blue: 28 }
+          secondaryColor: { red: 8, green: 8, blue: 10 }
+          accentColor: { red: 245, green: 245, blue: 242 }
+          metallicColor: { red: 142, green: 148, blue: 154 }
+          layoutPreset: two-competitor-title-center
+        assets:
+          showLogo: ECCW.png
+          competitorLeft: Breakker.png
+          competitorRight: Rage.png
+          beltImage: IC_Title.png
+          venueLogo: MGM.png
+        text:
+          championship: INTERCONTINENTAL CHAMPIONSHIP
+          competitorLeftName: BREAKKER
+          competitorRightName: RAGE
+          matchTitle: "BREAKKER\nRAGE"
+          stipulation: FIRST TO FIVE
+          date: SUNDAY · JULY 20
+          time: 2 PM EST | 1 PM CST | 7 PM GMT
+          venue: LIVE! FROM THE MGM GRAND ARENA IN LAS VEGAS
+        outputPsdName: ECCW_Breakker_vs_Rage_v1.psd
+        outputPreviewName: ECCW_Breakker_vs_Rage_v1.png
+        outputManifestName: ECCW_Breakker_vs_Rage_v1.matchcard.json
+
+    UpdateMatchCardChanges:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        templateBackground:
+          $ref: "#/components/schemas/TemplateBackground"
+        style:
+          $ref: "#/components/schemas/UpdateMatchCardStyle"
+        assets:
+          $ref: "#/components/schemas/UpdateMatchCardAssets"
+        text:
+          $ref: "#/components/schemas/MatchCardText"
+        placements:
+          $ref: "#/components/schemas/UpdateAssetPlacements"
+        visibility:
+          type: array
+          minItems: 1
+          maxItems: 40
+          uniqueItems: true
+          description: Each semantic role may appear only once.
+          items:
+            $ref: "#/components/schemas/VisibilityChange"
+
+    UpdateMatchCardRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - manifestFileName
+        - changes
+        - outputPsdName
+        - outputPreviewName
+        - outputManifestName
+      properties:
+        manifestFileName:
+          $ref: "#/components/schemas/ManifestFileName"
+        changes:
+          $ref: "#/components/schemas/UpdateMatchCardChanges"
+        outputPsdName:
+          $ref: "#/components/schemas/PsdOutputFileName"
+        outputPreviewName:
+          $ref: "#/components/schemas/PngOutputFileName"
+        outputManifestName:
+          $ref: "#/components/schemas/ManifestFileName"
+      description: The output manifest must differ from the input manifest; PSD and PNG outputs must not reuse replacement asset names; all outputs must be new.
+      example:
+        manifestFileName: ECCW_Breakker_vs_Rage_v1.matchcard.json
+        changes:
+          text:
+            stipulation: STEEL CAGE
+          assets:
+            competitorRight: Rage_v2.png
+          style:
+            accentColor: { red: 255, green: 210, blue: 30 }
+          visibility:
+            - role: venueLogo
+              visible: false
+        outputPsdName: ECCW_Breakker_vs_Rage_v2.psd
+        outputPreviewName: ECCW_Breakker_vs_Rage_v2.png
+        outputManifestName: ECCW_Breakker_vs_Rage_v2.matchcard.json
+
     QueuedJob:
       type: object
       required: [jobId, status, message]
@@ -519,7 +1400,7 @@ components:
           type: string
           format: date-time
         result:
-          description: Operation result. Inspection layer trees include textInfo on text layers.
+          description: Operation result. Asset-inventory success conforms to MatchCardAssetInventoryResult; inspection layer trees include textInfo.
         error:
           type: [string, "null"]
 
