@@ -1,217 +1,143 @@
-# Private Custom GPT → Photoshop UXP Bridge
+# Private Custom GPT to Photoshop Bridge
 
-This starter project implements a deliberately narrow first version:
+This project exposes three narrowly scoped Photoshop operations:
 
-1. Inspect the active/open PSD layer tree.
-2. Replace one named or ID-addressed Smart Object.
-3. Fit the replacement to the old layer bounds.
-4. Save a **new layered PSD copy**.
-5. Export a local PNG preview.
-6. Require approval inside Photoshop before any write operation.
+1. Inspect an active or exactly named open document and return its complete layer tree.
+2. Replace one ID- or name-addressed Smart Object, then save a new layered PSD and PNG preview.
+3. Apply allowlisted Color Overlay recolors to 1 through 25 exact layer IDs, then save a new layered PSD and flattened PNG preview.
 
-The relay does not call the OpenAI API. Your private Custom GPT calls the relay through a GPT Action.
-
-## Architecture
+The relay does not call the OpenAI API. A private Custom GPT calls the relay through a GPT Action. A local PowerShell agent polls the relay and invokes a fixed ExtendScript worker through Photoshop COM automation.
 
 ```text
 Private Custom GPT Action
         |
-        | HTTPS + Bearer GPT action key
+        | HTTPS + bearer GPT action key
         v
 Node/Express relay
         ^
         | HTTPS + separate device token
         |
-Photoshop UXP plugin
+Local PowerShell agent
         |
+        | Photoshop COM automation
         v
-Open PSD + user-approved working folder
+Fixed ExtendScript worker -> open PSD + configured working folder
 ```
 
-## Security decisions in this starter
+## Security model
 
-- No arbitrary JavaScript, shell, or filesystem endpoints.
-- GPT and Photoshop use separate secrets.
-- The plugin only accesses a folder selected through the UXP folder picker.
-- Inspection runs automatically; replacement requires approval in the Photoshop panel.
-- The original PSD is never intentionally overwritten.
-- Output names must be plain file names, not paths.
-- Jobs expire from the relay.
-- The starter relay stores jobs in memory. Replace this with Redis/Postgres before relying on it for durable production work.
+- There are no arbitrary JavaScript, Action Manager descriptor, shell, process, path, or filesystem endpoints.
+- GPT and the local agent use separate secrets.
+- Request schemas reject malformed and unknown recolor fields.
+- Inspection is read-only. Every replacement or recolor job requires the user to type exact `YES` locally.
+- Write operations duplicate the document and never intentionally modify or save over the original.
+- Output names must be plain filenames. The local worker refuses to overwrite an existing PSD or PNG.
+- Jobs expire from the relay. Jobs are held in memory, so a relay restart clears them.
 
----
+## Relay setup
 
-## Step 1 — Generate two secrets
-
-Run this twice in PowerShell or Command Prompt:
+Generate two different secrets:
 
 ```bash
 node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
 ```
 
-Use one result as `GPT_ACTION_API_KEY` and the other as `PHOTOSHOP_DEVICE_TOKEN`.
+Use one as `GPT_ACTION_API_KEY` and the other as `PHOTOSHOP_DEVICE_TOKEN`. Never reuse a secret.
 
-Never use the same value for both.
+For a local relay check:
 
-## Step 2 — Run the relay locally first
-
-```bash
-cd relay
-copy .env.example .env
-```
-
-Edit `.env`, then:
-
-```bash
+```powershell
+Set-Location relay
+Copy-Item .env.example .env
 npm install
 npm start
 ```
 
-Confirm:
+Confirm `http://localhost:3000/health`. A Custom GPT cannot call localhost, so deploy the relay to an HTTPS host before configuring the Action. `relay/render.yaml` provides one Render configuration; add both secrets to the host environment. The checked-in server URL is already configured for this project and should only be changed when the deployment origin changes.
 
-```text
-http://localhost:3000/health
+## Local agent setup
+
+Follow [LOCAL_AGENT_SETUP.md](LOCAL_AGENT_SETUP.md). In brief, copy `local-agent/.env.example` to `local-agent/.env`, configure the deployed relay URL, device token, and dedicated working folder, open Photoshop, and start `local-agent/start-agent.cmd`.
+
+Both `relay/.env` and `local-agent/.env` are ignored by Git. Never commit, paste, or log their contents.
+
+## Custom GPT Action setup
+
+In the private GPT editor:
+
+1. Add an Action using `relay/openapi.yaml`.
+2. Select API key authentication with the Bearer scheme.
+3. Use `GPT_ACTION_API_KEY`, never the local device token.
+4. Keep the GPT private.
+5. Use `CUSTOM_GPT_INSTRUCTIONS.md` as operating guidance.
+
+The OpenAPI document intentionally contains only caller-facing GPT operations. Local-agent endpoints are not exposed.
+
+## Inspect and replace workflow
+
+Open a PSD and keep the local agent running. First request an inspection and wait for the `inspectPhotoshopDocument` job to succeed. Prefer numeric layer IDs from that result.
+
+For Smart Object replacement, provide the exact layer ID, a replacement filename already present in the configured working folder, a fit mode (`contain`, `cover`, or `keep-transform`), and versioned PSD/PNG names. Review the local payload and type `YES` to approve. Existing inspection and replacement behavior remains unchanged.
+
+## Recolor one layer safely
+
+Inspect the open document **immediately before recoloring**. Copy the exact numeric layer ID from that fresh result; do not guess or reuse an ID after the document structure changes. Start with one test layer, review the new PSD and PNG, and only then submit a larger request.
+
+Each recolor edit has its own RGB color, opacity, and blend mode. Allowed modes are `normal`, `color`, `multiply`, `overlay`, and `screen`. Opacity is 0 through 100 and defaults to 100.
+
+Use this PowerShell request after replacing the sample document name, layer ID, and placeholder key:
+
+```powershell
+$headers = @{ Authorization = "Bearer YOUR_GPT_ACTION_API_KEY" }
+$body = @{
+    documentName = "RWCMatchCard.psd"
+    edits = @(
+        @{
+            layerId = 123
+            color = @{ red = 190; green = 20; blue = 25 }
+            opacity = 100
+            blendMode = "color"
+        }
+    )
+    outputPsdName = "RWCMatchCard_ECCW_Recolor_v1.psd"
+    outputPreviewName = "RWCMatchCard_ECCW_Recolor_v1.png"
+} | ConvertTo-Json -Depth 6
+$job = Invoke-RestMethod -Method Post -Uri "https://photoshop-gpt-bridge.onrender.com/api/jobs/recolor-layers" -Headers $headers -ContentType "application/json" -Body $body
+$job
 ```
 
-A Custom GPT cannot call localhost. Local mode is only for checking the server. Deploy it to an HTTPS host before configuring the GPT Action.
+The relay returns HTTP 202 and a `jobId`. In the local-agent window, inspect the complete payload and type `YES` exactly. Then poll the existing job-status operation:
 
-## Step 3 — Deploy the relay
-
-Render is one option:
-
-1. Push this project to a private GitHub repository.
-2. Create a new Render Blueprint from `render.yaml`, or create a Node web service with `relay` as the root directory.
-3. Add both secret environment variables.
-4. Confirm `https://YOUR-SERVICE/health` returns JSON.
-
-The relay has no database in this MVP. A service restart clears pending jobs.
-
-## Step 4 — Configure the UXP plugin
-
-Edit:
-
-```text
-plugin/manifest.json
+```powershell
+Invoke-RestMethod -Method Get -Uri "https://photoshop-gpt-bridge.onrender.com/api/jobs/$($job.jobId)" -Headers $headers
 ```
 
-Replace both occurrences of:
+Poll until `status` is `succeeded` or `failed`. Success returns the original document name, the edited PSD copy left open, per-layer IDs, names, paths and settings, both output paths, and `originalPreserved: true`.
 
-```text
-https://YOUR-RELAY-DOMAIN.example.com
+The worker resolves every requested source ID and stable index path before editing, duplicates the source document, resolves equivalent duplicate layers by index path, merges a Color Overlay into each existing effects descriptor, saves the layered PSD, and exports the flattened PNG from a temporary duplicate.
+
+### Recolor troubleshooting
+
+- **Layer ID was not found uniquely:** inspect again immediately and use the new exact ID.
+- **Unsupported layer:** test one ordinary pixel, text, shape, Smart Object, or group layer. Some special background, video, or 3D states may reject layer effects.
+- **Multiple Color Overlay effects:** Photoshop's multi-instance Color Overlay representation is refused because rewriting it could erase or reorder existing styles. Simplify the style manually or choose another layer.
+- **Other existing layer effects:** unrelated effects are retained when the Color Overlay is merged. If Photoshop cannot safely expose or reapply the style descriptor, the job fails instead of replacing it.
+- **Output already exists:** increment both versioned filenames, for example from `_v1` to `_v2`. Existing output files are never overwritten.
+- **Approval rejected:** queue a new job and type uppercase `YES` exactly after reviewing it.
+
+## Optional legacy UXP panel
+
+The `plugin/` directory and packaged `dist/` artifact contain the earlier UXP panel. The PowerShell/COM/ExtendScript agent is the current path for `recolorLayers`. If the optional panel is used for its existing operations, configure its manifest network origin narrowly and load it with UXP Developer Tool.
+
+## Development
+
+Run relay tests with:
+
+```powershell
+Set-Location relay
+npm test
 ```
 
-with the exact deployed relay origin, with no trailing slash.
+Smart Object replacement and Color Overlay are implemented with Action Manager only where the Photoshop DOM lacks the required operation. These descriptors are Photoshop-version-sensitive and require manual runtime verification against the installed Photoshop build.
 
-Do not use `network.domains: "all"`.
-
-## Step 5 — Load the plugin into Photoshop
-
-Install the latest Photoshop and **UXP Developer Tool** through Creative Cloud.
-
-In UXP Developer Tool:
-
-1. Choose **Add Plugin**.
-2. Select `plugin/manifest.json`.
-3. Launch or reload the plugin.
-4. In Photoshop, open **Plugins → Photoshop GPT Bridge**.
-
-Inside the panel:
-
-1. Enter the HTTPS relay URL.
-2. Enter `PHOTOSHOP_DEVICE_TOKEN`.
-3. Select a dedicated working folder.
-4. Put replacement files such as `ECCW.png` in that folder.
-5. Click **Connect**.
-
-## Step 6 — Configure the private Custom GPT Action
-
-Edit:
-
-```text
-relay/openapi.yaml
-```
-
-Replace:
-
-```text
-https://YOUR-RELAY-DOMAIN.example.com
-```
-
-with the deployed relay origin.
-
-In the GPT editor:
-
-1. Create a private GPT.
-2. Add a new Action.
-3. Paste `openapi.yaml`.
-4. Authentication: **API key → Bearer**.
-5. Use `GPT_ACTION_API_KEY`, not the Photoshop device token.
-6. Keep the GPT private.
-
-Suggested GPT instructions are in `CUSTOM_GPT_INSTRUCTIONS.md`.
-
-## Step 7 — First test
-
-Open a PSD in Photoshop and keep the bridge connected.
-
-Ask the GPT:
-
-```text
-Inspect the active Photoshop document. Return the document information and identify every Smart Object layer with its layer ID and full group path.
-```
-
-The GPT should:
-
-1. Call `inspectPhotoshopDocument`.
-2. Receive a `jobId`.
-3. Poll `getPhotoshopJobStatus`.
-4. Return the layer tree after the plugin completes the job.
-
-Then test a replacement:
-
-```text
-Replace Smart Object layer ID 123 with ECCW.png. Use contain fitting. Save CataclysmMatchCard_ECCW_v1.psd and CataclysmMatchCard_ECCW_v1.png. Do not overwrite the original.
-```
-
-Approve the pending job in the Photoshop panel.
-
----
-
-## Important Smart Object note
-
-Photoshop does not currently expose Smart Object replacement through the high-level UXP DOM. The plugin uses the lower-level `placedLayerReplaceContents` `batchPlay` command.
-
-Adobe recommends using DOM APIs first and `batchPlay` for functionality not exposed in the DOM. Action descriptors can be version-sensitive. If replacement fails on your Photoshop build:
-
-1. Enable developer mode/menu recording.
-2. Create a temporary Smart Object.
-3. Record **Replace Contents** in the Actions panel.
-4. Use **Copy As JavaScript**.
-5. Compare the copied descriptor with `replaceSelectedSmartObject()` in `plugin/index.js`.
-
-The plugin deliberately selects the target layer before replacement because this command may require the Smart Object to be the sole active layer.
-
-## Known MVP limitations
-
-- The relay is in-memory.
-- The PNG preview remains on your computer; it is not uploaded back to the GPT.
-- Only Smart Object replacement is implemented.
-- Duplicate layer names require using a layer ID.
-- Hidden layer filters or unusual Smart Object states can make Photoshop reject replacement.
-- Output files are overwritten if an earlier output copy has the same name. The original open document is protected by a name check, but use versioned output names.
-- Recoloring is intentionally not included yet. It should be added only after inspection and replacement work reliably.
-
-## Recommended next operations
-
-After the MVP works, add separate allowlisted operations:
-
-- `updateTextLayer`
-- `setLayerVisibility`
-- `renameLayer`
-- `transformLayer`
-- `updateSolidFill`
-- `updateHueSaturation`
-- `recolorNamedLayers`
-- preview upload through private object storage
-
-Do not add `executeJavaScript`, raw `batchPlay`, a generic filesystem endpoint, or shell/process access.
+Do not add generic code execution, raw batch operations, arbitrary paths, a generic filesystem interface, or shell/process access.

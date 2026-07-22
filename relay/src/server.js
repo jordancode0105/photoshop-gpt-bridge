@@ -123,6 +123,59 @@ const replaceSchema = z
     message: "Provide either layerId or layerName",
   });
 
+const rgbSchema = z
+  .object({
+    red: z.number().int().min(0).max(255),
+    green: z.number().int().min(0).max(255),
+    blue: z.number().int().min(0).max(255),
+  })
+  .strict();
+
+const recolorEditSchema = z
+  .object({
+    layerId: z.number().int().positive(),
+    color: rgbSchema,
+    opacity: z.number().min(0).max(100).default(100),
+    blendMode: z
+      .enum(["normal", "color", "multiply", "overlay", "screen"])
+      .default("normal"),
+  })
+  .strict();
+
+const plainPsdNameSchema = z
+  .string()
+  .min(5)
+  .max(255)
+  .regex(/^[^\\/]+\.psd$/i, "Expected a plain .psd file name");
+
+const plainPngNameSchema = z
+  .string()
+  .min(5)
+  .max(255)
+  .regex(/^[^\\/]+\.png$/i, "Expected a plain .png file name");
+
+const recolorSchema = z
+  .object({
+    documentName: z.string().min(1).max(255).optional(),
+    edits: z.array(recolorEditSchema).min(1).max(25),
+    outputPsdName: plainPsdNameSchema,
+    outputPreviewName: plainPngNameSchema,
+  })
+  .strict()
+  .superRefine((value, context) => {
+    const seen = new Set();
+    value.edits.forEach((edit, index) => {
+      if (seen.has(edit.layerId)) {
+        context.addIssue({
+          code: "custom",
+          path: ["edits", index, "layerId"],
+          message: `Duplicate layerId: ${edit.layerId}`,
+        });
+      }
+      seen.add(edit.layerId);
+    });
+  });
+
 app.get("/health", (_req, res) => {
   res.json({ ok: true, service: "photoshop-gpt-bridge", time: nowIso() });
 });
@@ -153,6 +206,24 @@ app.post("/api/jobs/replace-smart-object", requireGptAuth, (req, res) => {
     status: job.status,
     message:
       "Write operation queued. The user must approve it in the Photoshop Bridge panel, then poll job status.",
+  });
+});
+
+app.post("/api/jobs/recolor-layers", requireGptAuth, (req, res) => {
+  const parsed = recolorSchema.safeParse(req.body || {});
+  if (!parsed.success) {
+    return res.status(400).json({
+      error: "Invalid request",
+      details: parsed.error.flatten(),
+    });
+  }
+
+  const job = createJob("recolorLayers", parsed.data, true);
+  res.status(202).json({
+    jobId: job.id,
+    status: job.status,
+    message:
+      "Recolor operation queued. The user must approve it in the local Photoshop agent, then poll job status.",
   });
 });
 

@@ -3,9 +3,9 @@ info:
   title: Private Photoshop Bridge
   version: 0.1.0
   description: >
-    Queues narrowly scoped Photoshop jobs for a local UXP plugin. Inspection is
-    read-only. Smart Object replacement requires approval inside Photoshop and
-    always saves a new PSD copy.
+    Queues narrowly scoped Photoshop jobs for a local agent. Inspection is
+    read-only. Smart Object replacement and layer recoloring require local
+    approval and always save a new PSD copy.
 servers:
   - url: https://photoshop-gpt-bridge.onrender.com
 security:
@@ -90,6 +90,110 @@ paths:
       responses:
         "202":
           description: Write operation queued for local approval
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QueuedJob"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+
+  /api/jobs/recolor-layers:
+    post:
+      operationId: recolorPhotoshopLayers
+      summary: Apply safe Color Overlay effects and save new PSD and PNG files
+      description: >
+        Queue a consequential write operation. Exact layer IDs should come from
+        a fresh inspectPhotoshopDocument result because IDs and layer structure
+        can become stale. The user must approve the job in the local agent. The
+        original document is preserved; edits are applied only to a duplicate.
+        After receiving the jobId, poll getPhotoshopJobStatus until the job
+        succeeds or fails.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required:
+                - edits
+                - outputPsdName
+                - outputPreviewName
+              properties:
+                documentName:
+                  type: string
+                  minLength: 1
+                  maxLength: 255
+                  description: Optional exact open document name. Omit to use the active document.
+                edits:
+                  type: array
+                  minItems: 1
+                  maxItems: 25
+                  description: Each layerId must be unique within this request.
+                  items:
+                    type: object
+                    additionalProperties: false
+                    required: [layerId, color]
+                    properties:
+                      layerId:
+                        type: integer
+                        minimum: 1
+                        description: Exact numeric layer ID from a fresh inspection.
+                      color:
+                        type: object
+                        additionalProperties: false
+                        required: [red, green, blue]
+                        properties:
+                          red:
+                            type: integer
+                            minimum: 0
+                            maximum: 255
+                          green:
+                            type: integer
+                            minimum: 0
+                            maximum: 255
+                          blue:
+                            type: integer
+                            minimum: 0
+                            maximum: 255
+                      opacity:
+                        type: number
+                        minimum: 0
+                        maximum: 100
+                        default: 100
+                      blendMode:
+                        type: string
+                        enum: [normal, color, multiply, overlay, screen]
+                        default: normal
+                outputPsdName:
+                  type: string
+                  minLength: 5
+                  maxLength: 255
+                  pattern: '^[^\\/]+\.psd$'
+                  description: Plain, versioned .psd file name. Existing files are never overwritten.
+                outputPreviewName:
+                  type: string
+                  minLength: 5
+                  maxLength: 255
+                  pattern: '^[^\\/]+\.png$'
+                  description: Plain, versioned .png file name. Existing files are never overwritten.
+            example:
+              documentName: RWCMatchCard.psd
+              edits:
+                - layerId: 123
+                  color:
+                    red: 190
+                    green: 20
+                    blue: 25
+                  opacity: 100
+                  blendMode: color
+              outputPsdName: RWCMatchCard_ECCW_Recolor_v1.psd
+              outputPreviewName: RWCMatchCard_ECCW_Recolor_v1.png
+      responses:
+        "202":
+          description: Recolor operation queued for local approval
           content:
             application/json:
               schema:
