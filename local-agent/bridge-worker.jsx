@@ -295,6 +295,37 @@
             try { document.selection.deselect(); } catch (_alphaBoundsDeselectError) {}
         }
     }
+    function smartObjectPlacementTransform(layer) {
+        try {
+            var layerId = safeLayerId(layer);
+            if (!layerId) return null;
+            var reference = new ActionReference();
+            reference.putIdentifier(charIDToTypeID("Lyr "), layerId);
+            var layerDescriptor = executeActionGet(reference);
+            var smartObjectMoreKey = stringIDToTypeID("smartObjectMore");
+            if (!layerDescriptor.hasKey(smartObjectMoreKey)) return null;
+            var smartObjectMore = layerDescriptor.getObjectValue(smartObjectMoreKey);
+            var transformKey = stringIDToTypeID("transform");
+            if (!smartObjectMore.hasKey(transformKey)) return null;
+            var transformList = smartObjectMore.getList(transformKey), transform = [];
+            for (var transformIndex = 0; transformIndex < transformList.count; transformIndex++) {
+                var value = null;
+                try { value = Number(transformList.getDouble(transformIndex)); }
+                catch (_transformDoubleError) {
+                    try { value = Number(transformList.getUnitDoubleValue(transformIndex)); }
+                    catch (_transformUnitDoubleError) {
+                        try { value = Number(transformList.getInteger(transformIndex)); }
+                        catch (_transformIntegerError) { return null; }
+                    }
+                }
+                if (!isFinite(value)) return null;
+                transform.push(value);
+            }
+            return transform.length ? transform : null;
+        } catch (_smartObjectTransformInspectionError) {
+            return null;
+        }
+    }
     function descriptorUnitBound(boundsDescriptor, stringKey, charKey) {
         var stringId = stringIDToTypeID(stringKey), charId = charIDToTypeID(charKey);
         if (boundsDescriptor.hasKey(stringId)) return Number(boundsDescriptor.getUnitDoubleValue(stringId));
@@ -1340,6 +1371,7 @@
     var ECCW_PANEL_CANVAS_WIDTH = 1920;
     var ECCW_PANEL_CANVAS_HEIGHT = 1080;
     var ECCW_LOGO_WIDTH_VERIFICATION_TOLERANCE = 1;
+    var ECCW_LOGO_MAX_CORRECTION_ITERATIONS = 3;
     var MATCH_VISIBILITY_ROLES = [
         "templateBackground", "atmosphere", "framesAndPanels", "competitorRenders",
         "championshipAndBelt", "matchTitleGroup", "eventInformation", "showLogoGroup",
@@ -2470,8 +2502,8 @@
                 sourceOwned = true;
             }
             app.activeDocument = sourceDocument;
-            var sourceFullImageWidth = toPixels(sourceDocument.width);
-            if (!isFinite(sourceFullImageWidth) || sourceFullImageWidth <= 0) throw new Error("source document width is invalid");
+            var sourceFullWidth = toPixels(sourceDocument.width);
+            if (!isFinite(sourceFullWidth) || sourceFullWidth <= 0) throw new Error("source document width is invalid");
             analysisDocument = sourceDocument.duplicate("__ECCW_LOGO_ALPHA_INSPECTION__", true);
             app.activeDocument = analysisDocument;
             if (!analysisDocument.layers.length) throw new Error("source document has no visible layers");
@@ -2485,7 +2517,7 @@
             var sourceAlphaVisibleWidth = Number(sourceBounds.right) - Number(sourceBounds.left);
             if (!isFinite(sourceAlphaVisibleWidth) || sourceAlphaVisibleWidth <= 0) throw new Error("source alpha-visible width is empty");
             return {
-                sourceFullImageWidth: sourceFullImageWidth,
+                sourceFullWidth: sourceFullWidth,
                 sourceAlphaVisibleWidth: sourceAlphaVisibleWidth
             };
         } catch (error) {
@@ -2496,82 +2528,113 @@
             restoreActiveDocument(previous);
         }
     }
-    function calculateEccwLogoScaleDiagnostics(sourceFullImageWidth, sourceAlphaVisibleWidth, requestedAlphaVisibleWidth, initialPlacedAlphaVisibleWidth, measuredPlacedAlphaVisibleWidth, verificationTolerance) {
-        var values = [sourceFullImageWidth, sourceAlphaVisibleWidth, requestedAlphaVisibleWidth, initialPlacedAlphaVisibleWidth, verificationTolerance];
+    function calculateEccwLogoScaleDiagnostics(sourceFullWidth, sourceAlphaVisibleWidth, requestedAlphaVisibleWidth, initialPlacedAlphaVisibleWidth, initialPlacementTransform, measuredWidthAfterNominalScale, correctionFactors, finalMeasuredAlphaVisibleWidth, verificationTolerance) {
+        var values = [sourceFullWidth, sourceAlphaVisibleWidth, requestedAlphaVisibleWidth, initialPlacedAlphaVisibleWidth, measuredWidthAfterNominalScale, finalMeasuredAlphaVisibleWidth, verificationTolerance];
         for (var valueIndex = 0; valueIndex < values.length; valueIndex++) {
             if (!isFinite(Number(values[valueIndex])) || Number(values[valueIndex]) <= 0) throw new Error("ECCW logo scale diagnostics require positive finite measurements.");
         }
-        var appliedScaleFactor = Number(requestedAlphaVisibleWidth) / Number(sourceAlphaVisibleWidth);
-        var placementCorrectionFactor = Number(requestedAlphaVisibleWidth) / Number(initialPlacedAlphaVisibleWidth);
-        var measured = measuredPlacedAlphaVisibleWidth === null || typeof measuredPlacedAlphaVisibleWidth === "undefined" ?
-            null :
-            Number(measuredPlacedAlphaVisibleWidth);
-        if (measured !== null && (!isFinite(measured) || measured <= 0)) throw new Error("ECCW logo measured placed alpha-visible width is invalid.");
-        var difference = measured === null ? null : Math.abs(measured - Number(requestedAlphaVisibleWidth));
+        if (!(correctionFactors instanceof Array)) throw new Error("ECCW logo correctionFactors must be an array.");
+        var nominalScaleFactor = Number(requestedAlphaVisibleWidth) / Number(sourceAlphaVisibleWidth);
+        var cumulativeAppliedScaleFactor = nominalScaleFactor;
+        var normalizedCorrectionFactors = [];
+        for (var correctionIndex = 0; correctionIndex < correctionFactors.length; correctionIndex++) {
+            var correctionFactor = Number(correctionFactors[correctionIndex]);
+            if (!isFinite(correctionFactor) || correctionFactor <= 0) throw new Error("ECCW logo correctionFactors must contain positive finite values.");
+            normalizedCorrectionFactors.push(correctionFactor);
+            cumulativeAppliedScaleFactor *= correctionFactor;
+        }
+        var finalMeasured = Number(finalMeasuredAlphaVisibleWidth);
+        var difference = Math.abs(finalMeasured - Number(requestedAlphaVisibleWidth));
         return {
-            sourceFullImageWidth: Number(sourceFullImageWidth),
+            sourceFullWidth: Number(sourceFullWidth),
             sourceAlphaVisibleWidth: Number(sourceAlphaVisibleWidth),
             requestedAlphaVisibleWidth: Number(requestedAlphaVisibleWidth),
             initialPlacedAlphaVisibleWidth: Number(initialPlacedAlphaVisibleWidth),
-            appliedScaleFactor: appliedScaleFactor,
-            appliedScalePercentage: appliedScaleFactor * 100,
-            placementCorrectionFactor: placementCorrectionFactor,
-            placementCorrectionPercentage: placementCorrectionFactor * 100,
-            measuredPlacedAlphaVisibleWidth: measured,
-            differenceFromRequestedWidth: difference,
-            verificationTolerance: Number(verificationTolerance),
-            verificationPassed: measured !== null && difference <= Number(verificationTolerance),
+            initialPlacementTransform: initialPlacementTransform instanceof Array ? initialPlacementTransform.slice(0) : null,
+            nominalScaleFactor: nominalScaleFactor,
+            nominalScalePercent: nominalScaleFactor * 100,
+            measuredWidthAfterNominalScale: Number(measuredWidthAfterNominalScale),
+            correctionFactors: normalizedCorrectionFactors,
+            correctionIterations: normalizedCorrectionFactors.length,
+            cumulativeAppliedScaleFactor: cumulativeAppliedScaleFactor,
+            finalMeasuredAlphaVisibleWidth: finalMeasured,
+            difference: difference,
+            tolerance: Number(verificationTolerance),
+            verificationPassed: difference <= Number(verificationTolerance),
+            scaleAnchor: "MIDDLECENTER",
             postScaleContainmentOrNormalization: []
         };
     }
     function formatEccwLogoWidthVerificationFailure(diagnostics) {
         return "showLogo alpha-visible width verification failed: expected=" +
             Number(diagnostics.requestedAlphaVisibleWidth).toFixed(4) + "px, measured=" +
-            Number(diagnostics.measuredPlacedAlphaVisibleWidth).toFixed(4) + "px, sourceAlpha=" +
+            Number(diagnostics.finalMeasuredAlphaVisibleWidth).toFixed(4) + "px, sourceAlpha=" +
             Number(diagnostics.sourceAlphaVisibleWidth).toFixed(4) + "px, sourceFull=" +
-            Number(diagnostics.sourceFullImageWidth).toFixed(4) + "px, appliedScaleFactor=" +
-            Number(diagnostics.appliedScaleFactor).toFixed(8) + ", appliedScalePercent=" +
-            Number(diagnostics.appliedScalePercentage).toFixed(4) + "%, difference=" +
-            Number(diagnostics.differenceFromRequestedWidth).toFixed(4) + "px, tolerance=" +
-            Number(diagnostics.verificationTolerance).toFixed(4) +
-            "px, verificationPassed=false, postScaleContainmentOrNormalization=none.";
+            Number(diagnostics.sourceFullWidth).toFixed(4) + "px, initialPlacedAlpha=" +
+            Number(diagnostics.initialPlacedAlphaVisibleWidth).toFixed(4) + "px, initialPlacementTransform=" +
+            (diagnostics.initialPlacementTransform ? "[" + diagnostics.initialPlacementTransform.join(",") + "]" : "unavailable") +
+            ", nominalScaleFactor=" + Number(diagnostics.nominalScaleFactor).toFixed(8) +
+            ", nominalScalePercent=" + Number(diagnostics.nominalScalePercent).toFixed(4) +
+            "%, measuredAfterNominal=" + Number(diagnostics.measuredWidthAfterNominalScale).toFixed(4) +
+            "px, correctionFactors=[" + diagnostics.correctionFactors.join(",") +
+            "], correctionIterations=" + diagnostics.correctionIterations +
+            ", cumulativeAppliedScaleFactor=" + Number(diagnostics.cumulativeAppliedScaleFactor).toFixed(8) +
+            ", difference=" + Number(diagnostics.difference).toFixed(4) +
+            "px, tolerance=" + Number(diagnostics.tolerance).toFixed(4) +
+            "px, verificationPassed=false, scaleAnchor=" + diagnostics.scaleAnchor +
+            ", postScaleContainmentOrNormalization=none.";
     }
     function applyEccwLogoAlphaPlacement(document, layer, logoDirection, sourceGeometry, placementDiagnostics) {
         app.activeDocument = document;
         document.activeLayer = layer;
+        var initialPlacementTransform = smartObjectPlacementTransform(layer);
         var initialBounds = activeLayerTransparencyBounds(document, layer, "placed showLogo before scaling");
         var initialWidth = Number(initialBounds.right) - Number(initialBounds.left);
         var requestedWidth = Number(logoDirection.visibleWidth);
-        var preliminary = calculateEccwLogoScaleDiagnostics(
-            sourceGeometry.sourceFullImageWidth,
-            sourceGeometry.sourceAlphaVisibleWidth,
-            requestedWidth,
-            initialWidth,
-            null,
-            ECCW_LOGO_WIDTH_VERIFICATION_TOLERANCE
-        );
-        layer.resize(preliminary.placementCorrectionPercentage, preliminary.placementCorrectionPercentage, AnchorPosition.MIDDLECENTER);
-        var scaledBounds = activeLayerTransparencyBounds(document, layer, "placed showLogo after alpha-derived scaling");
+        var nominalScaleFactor = requestedWidth / Number(sourceGeometry.sourceAlphaVisibleWidth);
+        var initialPlacedScaleFactor = initialWidth / Number(sourceGeometry.sourceAlphaVisibleWidth);
+        var initialRelativeScaleFactor = nominalScaleFactor / initialPlacedScaleFactor;
+        layer.resize(initialRelativeScaleFactor * 100, initialRelativeScaleFactor * 100, AnchorPosition.MIDDLECENTER);
+        var nominalBounds = activeLayerTransparencyBounds(document, layer, "placed showLogo after nominal alpha-derived scaling");
+        var measuredWidthAfterNominalScale = Number(nominalBounds.right) - Number(nominalBounds.left);
+        var correctionFactors = [], finalBounds = nominalBounds, finalMeasuredWidth = measuredWidthAfterNominalScale;
+        while (
+            Math.abs(finalMeasuredWidth - requestedWidth) > ECCW_LOGO_WIDTH_VERIFICATION_TOLERANCE &&
+            correctionFactors.length < ECCW_LOGO_MAX_CORRECTION_ITERATIONS
+        ) {
+            var correctionFactor = requestedWidth / finalMeasuredWidth;
+            correctionFactors.push(correctionFactor);
+            layer.resize(correctionFactor * 100, correctionFactor * 100, AnchorPosition.MIDDLECENTER);
+            finalBounds = activeLayerTransparencyBounds(
+                document,
+                layer,
+                "placed showLogo after correction " + correctionFactors.length
+            );
+            finalMeasuredWidth = Number(finalBounds.right) - Number(finalBounds.left);
+        }
         var expectedCenterX = 960 + Number(logoDirection.xOffset);
         var expectedCenterY = 92 + Number(logoDirection.yOffset);
         layer.translate(
-            UnitValue(expectedCenterX - ((scaledBounds.left + scaledBounds.right) / 2), "px"),
-            UnitValue(expectedCenterY - ((scaledBounds.top + scaledBounds.bottom) / 2), "px")
+            UnitValue(expectedCenterX - ((finalBounds.left + finalBounds.right) / 2), "px"),
+            UnitValue(expectedCenterY - ((finalBounds.top + finalBounds.bottom) / 2), "px")
         );
-        var finalBounds = activeLayerTransparencyBounds(document, layer, "placed showLogo after offsets");
-        var measuredWidth = Number(finalBounds.right) - Number(finalBounds.left);
+        finalBounds = activeLayerTransparencyBounds(document, layer, "placed showLogo after offsets");
+        finalMeasuredWidth = Number(finalBounds.right) - Number(finalBounds.left);
         var diagnostics = calculateEccwLogoScaleDiagnostics(
-            sourceGeometry.sourceFullImageWidth,
+            sourceGeometry.sourceFullWidth,
             sourceGeometry.sourceAlphaVisibleWidth,
             requestedWidth,
             initialWidth,
-            measuredWidth,
+            initialPlacementTransform,
+            measuredWidthAfterNominalScale,
+            correctionFactors,
+            finalMeasuredWidth,
             ECCW_LOGO_WIDTH_VERIFICATION_TOLERANCE
         );
         if (placementDiagnostics) placementDiagnostics.showLogo = cloneJsonValue(diagnostics);
         if (!diagnostics.verificationPassed) throw new Error(formatEccwLogoWidthVerificationFailure(diagnostics));
         var finalGeometry = rect(finalBounds);
-        if (Math.abs(finalGeometry.centerX - expectedCenterX) > diagnostics.verificationTolerance || Math.abs(finalGeometry.centerY - expectedCenterY) > diagnostics.verificationTolerance) {
+        if (Math.abs(finalGeometry.centerX - expectedCenterX) > diagnostics.tolerance || Math.abs(finalGeometry.centerY - expectedCenterY) > diagnostics.tolerance) {
             throw new Error("showLogo alpha-visible center verification failed after applying xOffset/yOffset.");
         }
         return finalBounds;
@@ -3736,21 +3799,60 @@
     }
     function validateEccwLogoPlacementDiagnostics(value) {
         var label = "manifest artDirection.logoPlacement";
-        var numericKeys = [
+        var legacy = own(value, "sourceFullImageWidth");
+        var numericKeys = legacy ? [
             "sourceFullImageWidth", "sourceAlphaVisibleWidth", "requestedAlphaVisibleWidth",
             "initialPlacedAlphaVisibleWidth", "appliedScaleFactor", "appliedScalePercentage",
             "placementCorrectionFactor", "placementCorrectionPercentage",
             "measuredPlacedAlphaVisibleWidth", "differenceFromRequestedWidth", "verificationTolerance"
+        ] : [
+            "sourceFullWidth", "sourceAlphaVisibleWidth", "requestedAlphaVisibleWidth",
+            "initialPlacedAlphaVisibleWidth", "nominalScaleFactor", "nominalScalePercent",
+            "measuredWidthAfterNominalScale", "cumulativeAppliedScaleFactor",
+            "finalMeasuredAlphaVisibleWidth", "difference", "tolerance"
         ];
         var allowed = numericKeys.slice(0);
         allowed.push("verificationPassed");
         allowed.push("postScaleContainmentOrNormalization");
+        if (!legacy) {
+            allowed.push("initialPlacementTransform");
+            allowed.push("correctionFactors");
+            allowed.push("correctionIterations");
+            allowed.push("scaleAnchor");
+        }
         assertAllowedKeys(requirePlainObject(value, label), allowed, label);
         for (var numericIndex = 0; numericIndex < numericKeys.length; numericIndex++) {
             var numericKey = numericKeys[numericIndex];
             if (!own(value, numericKey) || !isFinite(Number(value[numericKey]))) throw new Error(label + "." + numericKey + " must be a finite number.");
-            if (numericKey !== "differenceFromRequestedWidth" && Number(value[numericKey]) <= 0) throw new Error(label + "." + numericKey + " must be positive.");
-            if (numericKey === "differenceFromRequestedWidth" && Number(value[numericKey]) < 0) throw new Error(label + "." + numericKey + " must not be negative.");
+            var permitsZero = numericKey === "differenceFromRequestedWidth" || numericKey === "difference";
+            if ((!permitsZero && Number(value[numericKey]) <= 0) || (permitsZero && Number(value[numericKey]) < 0)) {
+                throw new Error(label + "." + numericKey + (permitsZero ? " must not be negative." : " must be positive."));
+            }
+        }
+        if (!legacy) {
+            if (value.initialPlacementTransform !== null) {
+                if (!(value.initialPlacementTransform instanceof Array) || value.initialPlacementTransform.length < 1 || value.initialPlacementTransform.length > 32) {
+                    throw new Error(label + ".initialPlacementTransform must be null or a bounded numeric array.");
+                }
+                for (var transformIndex = 0; transformIndex < value.initialPlacementTransform.length; transformIndex++) {
+                    if (!isFinite(Number(value.initialPlacementTransform[transformIndex]))) throw new Error(label + ".initialPlacementTransform contains a non-finite value.");
+                }
+            }
+            if (!(value.correctionFactors instanceof Array) || value.correctionFactors.length > ECCW_LOGO_MAX_CORRECTION_ITERATIONS) {
+                throw new Error(label + ".correctionFactors exceeds the bounded correction count.");
+            }
+            for (var correctionIndex = 0; correctionIndex < value.correctionFactors.length; correctionIndex++) {
+                if (!isFinite(Number(value.correctionFactors[correctionIndex])) || Number(value.correctionFactors[correctionIndex]) <= 0) {
+                    throw new Error(label + ".correctionFactors contains an invalid factor.");
+                }
+            }
+            if (
+                !isFinite(Number(value.correctionIterations)) ||
+                Math.floor(Number(value.correctionIterations)) !== Number(value.correctionIterations) ||
+                Number(value.correctionIterations) !== value.correctionFactors.length
+            ) throw new Error(label + ".correctionIterations does not match correctionFactors.");
+            if (Number(value.tolerance) !== ECCW_LOGO_WIDTH_VERIFICATION_TOLERANCE) throw new Error(label + ".tolerance must remain 1 px.");
+            if (value.scaleAnchor !== "MIDDLECENTER") throw new Error(label + ".scaleAnchor is invalid.");
         }
         if (value.verificationPassed !== true) throw new Error(label + ".verificationPassed must be true for a completed manifest.");
         if (!(value.postScaleContainmentOrNormalization instanceof Array)) throw new Error(label + ".postScaleContainmentOrNormalization must be an array.");

@@ -1206,35 +1206,75 @@ test("ECCW logo placement derives final width from transparent source pixels", (
     `"use strict"; return (${workerSource.slice(formatterStart, placementStart).trim()});`
   )();
 
-  // Representative transparent PNG: the 1,536 px document is much wider
-  // than its 512 px alpha-visible logo. Photoshop initially placed that
-  // alpha at 128 px, so the worker must correct the existing transform while
-  // preserving the absolute requested/source scale.
-  const passed = calculation(1536, 512, 260, 128, 260.4, 1);
-  assert.equal(passed.sourceFullImageWidth, 1536);
-  assert.equal(passed.sourceAlphaVisibleWidth, 512);
+  // Runtime regression: the transparent PNG is 1,536 px wide with 1,500 px
+  // of alpha-visible logo. Photoshop reports 253 px after the nominal pass,
+  // requiring one relative feedback correction to converge on 260 px.
+  const correctionFactor = 260 / 253;
+  const initialTransform = [0, 0, 1536, 0, 1536, 1024, 0, 1024];
+  const passed = calculation(
+    1536,
+    1500,
+    260,
+    1500,
+    initialTransform,
+    253,
+    [correctionFactor],
+    260,
+    1
+  );
+  assert.equal(passed.sourceFullWidth, 1536);
+  assert.equal(passed.sourceAlphaVisibleWidth, 1500);
   assert.equal(passed.requestedAlphaVisibleWidth, 260);
-  assert.equal(passed.appliedScaleFactor, 260 / 512);
-  assert.equal(passed.appliedScalePercentage, (260 / 512) * 100);
-  assert.equal(passed.placementCorrectionFactor, 260 / 128);
-  assert.equal(passed.measuredPlacedAlphaVisibleWidth, 260.4);
-  assert.ok(Math.abs(passed.differenceFromRequestedWidth - 0.4) < 1e-9);
-  assert.equal(passed.verificationTolerance, 1);
+  assert.equal(passed.initialPlacedAlphaVisibleWidth, 1500);
+  assert.deepEqual(passed.initialPlacementTransform, initialTransform);
+  assert.equal(passed.nominalScaleFactor, 260 / 1500);
+  assert.equal(passed.nominalScalePercent, (260 / 1500) * 100);
+  assert.equal(passed.measuredWidthAfterNominalScale, 253);
+  assert.equal(passed.correctionFactors.length, 1);
+  assert.ok(Math.abs(passed.correctionFactors[0] - 1.0276679841897234) < 1e-12);
+  assert.equal(passed.correctionIterations, 1);
+  assert.ok(
+    Math.abs(
+      passed.cumulativeAppliedScaleFactor -
+        (260 / 1500) * correctionFactor
+    ) < 1e-12
+  );
+  assert.equal(passed.finalMeasuredAlphaVisibleWidth, 260);
+  assert.equal(passed.difference, 0);
+  assert.equal(passed.tolerance, 1);
   assert.equal(passed.verificationPassed, true);
+  assert.equal(passed.scaleAnchor, "MIDDLECENTER");
   assert.deepEqual(passed.postScaleContainmentOrNormalization, []);
 
-  const failed = calculation(1536, 512, 260, 128, 253, 1);
+  const failed = calculation(
+    1536,
+    1500,
+    260,
+    1500,
+    null,
+    253,
+    [260 / 253, 260 / 252, 260 / 252],
+    252,
+    1
+  );
   assert.equal(failed.verificationPassed, false);
+  assert.equal(failed.correctionIterations, 3);
   const message = formatFailure(failed);
   assert.match(message, /expected=260\.0000px/);
-  assert.match(message, /measured=253\.0000px/);
-  assert.match(message, /sourceAlpha=512\.0000px/);
+  assert.match(message, /measured=252\.0000px/);
+  assert.match(message, /sourceAlpha=1500\.0000px/);
   assert.match(message, /sourceFull=1536\.0000px/);
-  assert.match(message, /appliedScaleFactor=0\.50781250/);
-  assert.match(message, /appliedScalePercent=50\.7813%/);
-  assert.match(message, /difference=7\.0000px/);
+  assert.match(message, /initialPlacedAlpha=1500\.0000px/);
+  assert.match(message, /initialPlacementTransform=unavailable/);
+  assert.match(message, /nominalScaleFactor=0\.17333333/);
+  assert.match(message, /nominalScalePercent=17\.3333%/);
+  assert.match(message, /measuredAfterNominal=253\.0000px/);
+  assert.match(message, /correctionIterations=3/);
+  assert.match(message, /cumulativeAppliedScaleFactor=/);
+  assert.match(message, /difference=8\.0000px/);
   assert.match(message, /tolerance=1\.0000px/);
   assert.match(message, /verificationPassed=false/);
+  assert.match(message, /scaleAnchor=MIDDLECENTER/);
   assert.match(message, /postScaleContainmentOrNormalization=none/);
 
   const logoPlacementSource = workerSource.slice(
@@ -1251,16 +1291,57 @@ test("ECCW logo placement derives final width from transparent source pixels", (
   );
   assert.match(
     logoPlacementSource,
-    /layer\.resize\(preliminary\.placementCorrectionPercentage, preliminary\.placementCorrectionPercentage, AnchorPosition\.MIDDLECENTER\)/
+    /var nominalScaleFactor = requestedWidth \/ Number\(sourceGeometry\.sourceAlphaVisibleWidth\)/
+  );
+  assert.match(
+    logoPlacementSource,
+    /var initialPlacedScaleFactor = initialWidth \/ Number\(sourceGeometry\.sourceAlphaVisibleWidth\)/
+  );
+  assert.match(
+    logoPlacementSource,
+    /var initialRelativeScaleFactor = nominalScaleFactor \/ initialPlacedScaleFactor/
+  );
+  assert.match(
+    logoPlacementSource,
+    /layer\.resize\(initialRelativeScaleFactor \* 100, initialRelativeScaleFactor \* 100, AnchorPosition\.MIDDLECENTER\)/
+  );
+  assert.match(
+    logoPlacementSource,
+    /var correctionFactor = requestedWidth \/ finalMeasuredWidth/
+  );
+  assert.match(
+    logoPlacementSource,
+    /layer\.resize\(correctionFactor \* 100, correctionFactor \* 100, AnchorPosition\.MIDDLECENTER\)/
+  );
+  assert.match(
+    logoPlacementSource,
+    /correctionFactors\.length < ECCW_LOGO_MAX_CORRECTION_ITERATIONS/
   );
   assert.match(
     logoPlacementSource,
     /activeLayerTransparencyBounds\(document, layer, "placed showLogo after offsets"\)/
   );
   assert.ok(
-    logoPlacementSource.indexOf("layer.resize(") <
+    logoPlacementSource.lastIndexOf("layer.resize(") <
       logoPlacementSource.indexOf("layer.translate(")
   );
+  assert.match(
+    logoPlacementSource,
+    /var expectedCenterX = 960 \+ Number\(logoDirection\.xOffset\)/
+  );
+  assert.match(
+    logoPlacementSource,
+    /var expectedCenterY = 92 \+ Number\(logoDirection\.yOffset\)/
+  );
+  assert.match(
+    logoPlacementSource,
+    /UnitValue\(expectedCenterX - \(\(finalBounds\.left \+ finalBounds\.right\) \/ 2\), "px"\)/
+  );
+  assert.match(workerSource, /var ECCW_LOGO_WIDTH_VERIFICATION_TOLERANCE = 1;/);
+  assert.match(workerSource, /var ECCW_LOGO_MAX_CORRECTION_ITERATIONS = 3;/);
+  assert.match(workerSource, /function smartObjectPlacementTransform\(layer\)/);
+  assert.match(workerSource, /stringIDToTypeID\("smartObjectMore"\)/);
+  assert.match(workerSource, /stringIDToTypeID\("transform"\)/);
   assert.doesNotMatch(
     logoPlacementSource,
     /applyLayerPlacement|fitMode|maxWidth|maxHeight/
