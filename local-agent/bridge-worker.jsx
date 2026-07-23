@@ -277,6 +277,24 @@
             return { left: toPixels(b[0]), top: toPixels(b[1]), right: toPixels(b[2]), bottom: toPixels(b[3]) };
         } catch (_noEffectBoundsError) { return safeBounds(layer); }
     }
+    function activeLayerTransparencyBounds(document, layer, label) {
+        app.activeDocument = document;
+        document.activeLayer = layer;
+        var descriptor = new ActionDescriptor(), selectionReference = new ActionReference(), transparencyReference = new ActionReference();
+        selectionReference.putProperty(charIDToTypeID("Chnl"), charIDToTypeID("fsel"));
+        descriptor.putReference(charIDToTypeID("null"), selectionReference);
+        transparencyReference.putEnumerated(charIDToTypeID("Chnl"), charIDToTypeID("Chnl"), charIDToTypeID("Trsp"));
+        descriptor.putReference(charIDToTypeID("T   "), transparencyReference);
+        try {
+            executeAction(charIDToTypeID("setd"), descriptor, DialogModes.NO);
+            var b = document.selection.bounds;
+            return { left: toPixels(b[0]), top: toPixels(b[1]), right: toPixels(b[2]), bottom: toPixels(b[3]) };
+        } catch (error) {
+            throw new Error("Could not measure alpha-visible pixels for " + label + ": " + error.message);
+        } finally {
+            try { document.selection.deselect(); } catch (_alphaBoundsDeselectError) {}
+        }
+    }
     function descriptorUnitBound(boundsDescriptor, stringKey, charKey) {
         var stringId = stringIDToTypeID(stringKey), charId = charIDToTypeID(charKey);
         if (boundsDescriptor.hasKey(stringId)) return Number(boundsDescriptor.getUnitDoubleValue(stringId));
@@ -1321,6 +1339,7 @@
     var ECCW_PANEL_TEMPLATE_FILE_NAME = "ECCW_JordanSinner_vs_EddieSlayer_template_bg_v1.png";
     var ECCW_PANEL_CANVAS_WIDTH = 1920;
     var ECCW_PANEL_CANVAS_HEIGHT = 1080;
+    var ECCW_LOGO_WIDTH_VERIFICATION_TOLERANCE = 1;
     var MATCH_VISIBILITY_ROLES = [
         "templateBackground", "atmosphere", "framesAndPanels", "competitorRenders",
         "championshipAndBelt", "matchTitleGroup", "eventInformation", "showLogoGroup",
@@ -2442,9 +2461,128 @@
             restoreActiveDocument(previous);
         }
     }
-    function applyEccwVisibleContentPlacement(document, layer, role, artDirection) {
+    function inspectEccwLogoSourceAlphaGeometry(file) {
+        var previous = currentDocumentOrNull(), sourceDocument = null, sourceOwned = false, analysisDocument = null;
+        try {
+            sourceDocument = findOpenDocumentForFile(file);
+            if (!sourceDocument) {
+                sourceDocument = app.open(file);
+                sourceOwned = true;
+            }
+            app.activeDocument = sourceDocument;
+            var sourceFullImageWidth = toPixels(sourceDocument.width);
+            if (!isFinite(sourceFullImageWidth) || sourceFullImageWidth <= 0) throw new Error("source document width is invalid");
+            analysisDocument = sourceDocument.duplicate("__ECCW_LOGO_ALPHA_INSPECTION__", true);
+            app.activeDocument = analysisDocument;
+            if (!analysisDocument.layers.length) throw new Error("source document has no visible layers");
+            var analysisLayer = analysisDocument.layers[0], sourceBounds = null;
+            try {
+                if (Boolean(analysisLayer.isBackgroundLayer)) {
+                    sourceBounds = { left: 0, top: 0, right: toPixels(analysisDocument.width), bottom: toPixels(analysisDocument.height) };
+                }
+            } catch (_logoBackgroundInspectionError) {}
+            if (!sourceBounds) sourceBounds = activeLayerTransparencyBounds(analysisDocument, analysisLayer, "showLogo source");
+            var sourceAlphaVisibleWidth = Number(sourceBounds.right) - Number(sourceBounds.left);
+            if (!isFinite(sourceAlphaVisibleWidth) || sourceAlphaVisibleWidth <= 0) throw new Error("source alpha-visible width is empty");
+            return {
+                sourceFullImageWidth: sourceFullImageWidth,
+                sourceAlphaVisibleWidth: sourceAlphaVisibleWidth
+            };
+        } catch (error) {
+            throw new Error("Could not inspect showLogo source alpha geometry: " + safeBaleStageErrorMessage(error));
+        } finally {
+            if (analysisDocument) try { analysisDocument.close(SaveOptions.DONOTSAVECHANGES); } catch (_logoAnalysisCloseError) {}
+            if (sourceOwned && sourceDocument) try { sourceDocument.close(SaveOptions.DONOTSAVECHANGES); } catch (_logoSourceCloseError) {}
+            restoreActiveDocument(previous);
+        }
+    }
+    function calculateEccwLogoScaleDiagnostics(sourceFullImageWidth, sourceAlphaVisibleWidth, requestedAlphaVisibleWidth, initialPlacedAlphaVisibleWidth, measuredPlacedAlphaVisibleWidth, verificationTolerance) {
+        var values = [sourceFullImageWidth, sourceAlphaVisibleWidth, requestedAlphaVisibleWidth, initialPlacedAlphaVisibleWidth, verificationTolerance];
+        for (var valueIndex = 0; valueIndex < values.length; valueIndex++) {
+            if (!isFinite(Number(values[valueIndex])) || Number(values[valueIndex]) <= 0) throw new Error("ECCW logo scale diagnostics require positive finite measurements.");
+        }
+        var appliedScaleFactor = Number(requestedAlphaVisibleWidth) / Number(sourceAlphaVisibleWidth);
+        var placementCorrectionFactor = Number(requestedAlphaVisibleWidth) / Number(initialPlacedAlphaVisibleWidth);
+        var measured = measuredPlacedAlphaVisibleWidth === null || typeof measuredPlacedAlphaVisibleWidth === "undefined" ?
+            null :
+            Number(measuredPlacedAlphaVisibleWidth);
+        if (measured !== null && (!isFinite(measured) || measured <= 0)) throw new Error("ECCW logo measured placed alpha-visible width is invalid.");
+        var difference = measured === null ? null : Math.abs(measured - Number(requestedAlphaVisibleWidth));
+        return {
+            sourceFullImageWidth: Number(sourceFullImageWidth),
+            sourceAlphaVisibleWidth: Number(sourceAlphaVisibleWidth),
+            requestedAlphaVisibleWidth: Number(requestedAlphaVisibleWidth),
+            initialPlacedAlphaVisibleWidth: Number(initialPlacedAlphaVisibleWidth),
+            appliedScaleFactor: appliedScaleFactor,
+            appliedScalePercentage: appliedScaleFactor * 100,
+            placementCorrectionFactor: placementCorrectionFactor,
+            placementCorrectionPercentage: placementCorrectionFactor * 100,
+            measuredPlacedAlphaVisibleWidth: measured,
+            differenceFromRequestedWidth: difference,
+            verificationTolerance: Number(verificationTolerance),
+            verificationPassed: measured !== null && difference <= Number(verificationTolerance),
+            postScaleContainmentOrNormalization: []
+        };
+    }
+    function formatEccwLogoWidthVerificationFailure(diagnostics) {
+        return "showLogo alpha-visible width verification failed: expected=" +
+            Number(diagnostics.requestedAlphaVisibleWidth).toFixed(4) + "px, measured=" +
+            Number(diagnostics.measuredPlacedAlphaVisibleWidth).toFixed(4) + "px, sourceAlpha=" +
+            Number(diagnostics.sourceAlphaVisibleWidth).toFixed(4) + "px, sourceFull=" +
+            Number(diagnostics.sourceFullImageWidth).toFixed(4) + "px, appliedScaleFactor=" +
+            Number(diagnostics.appliedScaleFactor).toFixed(8) + ", appliedScalePercent=" +
+            Number(diagnostics.appliedScalePercentage).toFixed(4) + "%, difference=" +
+            Number(diagnostics.differenceFromRequestedWidth).toFixed(4) + "px, tolerance=" +
+            Number(diagnostics.verificationTolerance).toFixed(4) +
+            "px, verificationPassed=false, postScaleContainmentOrNormalization=none.";
+    }
+    function applyEccwLogoAlphaPlacement(document, layer, logoDirection, sourceGeometry, placementDiagnostics) {
         app.activeDocument = document;
         document.activeLayer = layer;
+        var initialBounds = activeLayerTransparencyBounds(document, layer, "placed showLogo before scaling");
+        var initialWidth = Number(initialBounds.right) - Number(initialBounds.left);
+        var requestedWidth = Number(logoDirection.visibleWidth);
+        var preliminary = calculateEccwLogoScaleDiagnostics(
+            sourceGeometry.sourceFullImageWidth,
+            sourceGeometry.sourceAlphaVisibleWidth,
+            requestedWidth,
+            initialWidth,
+            null,
+            ECCW_LOGO_WIDTH_VERIFICATION_TOLERANCE
+        );
+        layer.resize(preliminary.placementCorrectionPercentage, preliminary.placementCorrectionPercentage, AnchorPosition.MIDDLECENTER);
+        var scaledBounds = activeLayerTransparencyBounds(document, layer, "placed showLogo after alpha-derived scaling");
+        var expectedCenterX = 960 + Number(logoDirection.xOffset);
+        var expectedCenterY = 92 + Number(logoDirection.yOffset);
+        layer.translate(
+            UnitValue(expectedCenterX - ((scaledBounds.left + scaledBounds.right) / 2), "px"),
+            UnitValue(expectedCenterY - ((scaledBounds.top + scaledBounds.bottom) / 2), "px")
+        );
+        var finalBounds = activeLayerTransparencyBounds(document, layer, "placed showLogo after offsets");
+        var measuredWidth = Number(finalBounds.right) - Number(finalBounds.left);
+        var diagnostics = calculateEccwLogoScaleDiagnostics(
+            sourceGeometry.sourceFullImageWidth,
+            sourceGeometry.sourceAlphaVisibleWidth,
+            requestedWidth,
+            initialWidth,
+            measuredWidth,
+            ECCW_LOGO_WIDTH_VERIFICATION_TOLERANCE
+        );
+        if (placementDiagnostics) placementDiagnostics.showLogo = cloneJsonValue(diagnostics);
+        if (!diagnostics.verificationPassed) throw new Error(formatEccwLogoWidthVerificationFailure(diagnostics));
+        var finalGeometry = rect(finalBounds);
+        if (Math.abs(finalGeometry.centerX - expectedCenterX) > diagnostics.verificationTolerance || Math.abs(finalGeometry.centerY - expectedCenterY) > diagnostics.verificationTolerance) {
+            throw new Error("showLogo alpha-visible center verification failed after applying xOffset/yOffset.");
+        }
+        return finalBounds;
+    }
+    function applyEccwVisibleContentPlacement(document, layer, role, artDirection, logoSourceGeometry, placementDiagnostics) {
+        app.activeDocument = document;
+        document.activeLayer = layer;
+        if (role === "showLogo") {
+            if (!logoSourceGeometry) throw new Error("showLogo alpha-visible placement requires measured source geometry.");
+            return applyEccwLogoAlphaPlacement(document, layer, artDirection.topPlate.logo, logoSourceGeometry, placementDiagnostics);
+        }
         var initialBounds = safeTransformBounds(layer);
         if (!initialBounds) throw new Error("Could not read alpha-visible bounds for " + role + ".");
         var initial = rect(initialBounds);
@@ -2455,10 +2593,6 @@
             scaleRatio = (605 * Number(competitorDirection.scale)) / initial.height;
             expectedCenterX = (role === "competitorLeft" ? 480 : 1440) + Number(competitorDirection.xOffset);
             expectedTop = Number(competitorDirection.headTargetY) + Number(competitorDirection.yOffset);
-        } else if (role === "showLogo") {
-            scaleRatio = Number(artDirection.topPlate.logo.visibleWidth) / initial.width;
-            expectedCenterX = 960 + Number(artDirection.topPlate.logo.xOffset);
-            expectedCenterY = 92 + Number(artDirection.topPlate.logo.yOffset);
         } else {
             throw new Error("Unsupported ECCW alpha-aware placement role: " + role);
         }
@@ -2476,9 +2610,6 @@
         if (Math.abs(placed.centerX - expectedCenterX) > 1) throw new Error(role + " alpha-visible content is not horizontally centered.");
         if (expectedTop !== null && Math.abs(placed.top - expectedTop) > 1) throw new Error(role + " alpha-visible content does not begin near y=" + expectedTop + ".");
         if (expectedCenterY !== null && Math.abs(placed.centerY - expectedCenterY) > 1) throw new Error(role + " alpha-visible content is not vertically centered.");
-        if (role === "showLogo" && Math.abs(placed.width - Number(artDirection.topPlate.logo.visibleWidth)) > 1) {
-            throw new Error("showLogo alpha-visible width does not match the resolved art direction.");
-        }
         if ((role === "competitorLeft" || role === "competitorRight") && Math.abs(placed.height - (605 * Number(artDirection[role].scale))) > 1) {
             throw new Error(role + " alpha-visible height does not match the resolved art-direction scale.");
         }
@@ -2584,14 +2715,17 @@
         if (!adjustmentLayer.grouped) throw new Error("Photoshop did not clip the non-destructive brightness/contrast adjustment to " + role + ".");
         return adjustmentLayer;
     }
-    function placeMatchAsset(document, folder, role, fileName, groups, placement, accentColor, layoutPreset, semanticReferences, warnings, artDirection) {
+    function placeMatchAsset(document, folder, role, fileName, groups, placement, accentColor, layoutPreset, semanticReferences, warnings, artDirection, placementDiagnostics) {
         var file = childFile(folder, fileName);
         if (!file.exists) throw new Error("Missing required asset: " + fileName);
         inspectCompetitorTransparencyBeforePlacement(file, role, warnings || []);
+        var logoSourceGeometry = layoutPreset === ECCW_PANEL_LAYOUT_PRESET && role === "showLogo" ?
+            inspectEccwLogoSourceAlphaGeometry(file) :
+            null;
         var group = groupForAssetRole(groups, role), layer = placeFileAsSmartObject(document, file, group, MATCH_ASSET_LAYER_NAMES[role]);
         var isEccwCoreAsset = layoutPreset === ECCW_PANEL_LAYOUT_PRESET && valueInList(role, ["competitorLeft", "competitorRight", "showLogo"]);
         var targetBounds = isEccwCoreAsset ?
-            applyEccwVisibleContentPlacement(document, layer, role, artDirection) :
+            applyEccwVisibleContentPlacement(document, layer, role, artDirection, logoSourceGeometry, placementDiagnostics) :
             applyLayerPlacement(document, layer, role, placement || null, "contain", layoutPreset);
         if (isEccwCoreAsset && (role === "competitorLeft" || role === "competitorRight")) {
             applyMandatoryEccwCutoffMask(document, layer, role, targetBounds, Number(artDirection[role].cutoffY));
@@ -3052,6 +3186,14 @@
         }
         return geometry;
     }
+    function assertAlphaVisibleLayerCenter(document, layer, role, expectedX, expectedY, tolerance) {
+        var bounds = activeLayerTransparencyBounds(document, layer, role + " preview");
+        var geometry = rect(bounds);
+        if (Math.abs(geometry.centerX - expectedX) > tolerance || Math.abs(geometry.centerY - expectedY) > tolerance) {
+            throw new Error(role + " alpha-visible pixels are not centered in the deterministic ECCW panel.");
+        }
+        return geometry;
+    }
     function validateEccwPreviewLayout(document, semantic, layoutPreset, assets, text, groups, approvedFont, artDirection) {
         if (layoutPreset !== ECCW_PANEL_LAYOUT_PRESET) return;
         if (toPixels(document.width) !== ECCW_PANEL_CANVAS_WIDTH || toPixels(document.height) !== ECCW_PANEL_CANVAS_HEIGHT) {
@@ -3095,14 +3237,17 @@
             throw new Error("The ECCW panel template preset must not generate overlay rectangles: " + rectangleRole + ".");
         }
 
-        var logoBounds = assertLayerCenter(
+        var logoBounds = assertAlphaVisibleLayerCenter(
+            document,
             semantic.showLogo,
             "showLogo",
             960 + Number(artDirection.topPlate.logo.xOffset),
             92 + Number(artDirection.topPlate.logo.yOffset),
-            2
+            ECCW_LOGO_WIDTH_VERIFICATION_TOLERANCE
         );
-        if (Math.abs(logoBounds.width - Number(artDirection.topPlate.logo.visibleWidth)) > 1) throw new Error("showLogo alpha-visible width does not match resolved art direction.");
+        if (Math.abs(logoBounds.width - Number(artDirection.topPlate.logo.visibleWidth)) > ECCW_LOGO_WIDTH_VERIFICATION_TOLERANCE) {
+            throw new Error("showLogo preview alpha-visible width does not match resolved art direction.");
+        }
         var dateBounds = assertLayerCenter(
             semantic.date,
             "date",
@@ -3589,10 +3734,34 @@
             if (!isFinite(number) || Math.abs(number) > 100000000) throw new Error(label + "." + keys[i] + " must be a finite measured value.");
         }
     }
+    function validateEccwLogoPlacementDiagnostics(value) {
+        var label = "manifest artDirection.logoPlacement";
+        var numericKeys = [
+            "sourceFullImageWidth", "sourceAlphaVisibleWidth", "requestedAlphaVisibleWidth",
+            "initialPlacedAlphaVisibleWidth", "appliedScaleFactor", "appliedScalePercentage",
+            "placementCorrectionFactor", "placementCorrectionPercentage",
+            "measuredPlacedAlphaVisibleWidth", "differenceFromRequestedWidth", "verificationTolerance"
+        ];
+        var allowed = numericKeys.slice(0);
+        allowed.push("verificationPassed");
+        allowed.push("postScaleContainmentOrNormalization");
+        assertAllowedKeys(requirePlainObject(value, label), allowed, label);
+        for (var numericIndex = 0; numericIndex < numericKeys.length; numericIndex++) {
+            var numericKey = numericKeys[numericIndex];
+            if (!own(value, numericKey) || !isFinite(Number(value[numericKey]))) throw new Error(label + "." + numericKey + " must be a finite number.");
+            if (numericKey !== "differenceFromRequestedWidth" && Number(value[numericKey]) <= 0) throw new Error(label + "." + numericKey + " must be positive.");
+            if (numericKey === "differenceFromRequestedWidth" && Number(value[numericKey]) < 0) throw new Error(label + "." + numericKey + " must not be negative.");
+        }
+        if (value.verificationPassed !== true) throw new Error(label + ".verificationPassed must be true for a completed manifest.");
+        if (!(value.postScaleContainmentOrNormalization instanceof Array)) throw new Error(label + ".postScaleContainmentOrNormalization must be an array.");
+        for (var actionIndex = 0; actionIndex < value.postScaleContainmentOrNormalization.length; actionIndex++) {
+            requireString(value.postScaleContainmentOrNormalization[actionIndex], label + ".postScaleContainmentOrNormalization entry", 1, 160, false);
+        }
+    }
     function validateManifestArtDirection(value) {
         assertAllowedKeys(requirePlainObject(value, "manifest artDirection"), [
             "requested", "resolved", "installedFont", "finalTextBounds",
-            "competitorVisibleBounds", "masks", "adjustments"
+            "competitorVisibleBounds", "masks", "adjustments", "logoPlacement"
         ], "manifest artDirection");
         validateEccwArtDirection(value.requested, "manifest artDirection.requested");
         validateEccwArtDirection(value.resolved, "manifest artDirection.resolved");
@@ -3623,6 +3792,7 @@
                 if (!isFinite(adjustmentLayerId) || adjustmentLayerId <= 0 || Math.floor(adjustmentLayerId) !== adjustmentLayerId) throw new Error("Manifest adjustment layerId is invalid for " + role + ".");
             }
         }
+        if (own(value, "logoPlacement")) validateEccwLogoPlacementDiagnostics(value.logoPlacement);
     }
     function validateMatchCardManifest(manifest) {
         var allowed = [
@@ -3722,7 +3892,7 @@
         for (var i = 0; i < group.layers.length; i++) if (group.layers[i].name === name) return group.layers[i];
         return null;
     }
-    function buildEccwArtDirectionRecord(document, semantic, groups, requested, resolved, approvedFont) {
+    function buildEccwArtDirectionRecord(document, semantic, groups, requested, resolved, approvedFont, logoPlacementDiagnostics) {
         var textBounds = {}, textRoles = ["competitorLeftName", "competitorRightName", "matchTitle", "date", "stipulation"];
         for (var textIndex = 0; textIndex < textRoles.length; textIndex++) {
             var textRole = textRoles[textIndex];
@@ -3756,7 +3926,7 @@
             if (own(direction, "contrast")) adjustments[role].contrast = Number(direction.contrast);
             if (adjustmentLayer) adjustments[role].layerId = safeLayerId(adjustmentLayer);
         }
-        return {
+        var record = {
             requested: cloneJsonValue(requested || {}),
             resolved: cloneJsonValue(resolved),
             installedFont: {
@@ -3769,6 +3939,8 @@
             masks: masks,
             adjustments: adjustments
         };
+        if (logoPlacementDiagnostics) record.logoPlacement = cloneJsonValue(logoPlacementDiagnostics);
+        return record;
     }
     function buildCreateManifest(input, payload, semanticLayers, warnings, artDirectionRecord) {
         var baleCc = configuredBaleCc(input, true);
@@ -3815,7 +3987,7 @@
         var stage = "preflight", preflight = preflightCreateMatchCard(input, payload);
         assertCreatePreflightReady(preflight);
         var outputPsd = childFile(folder, payload.outputPsdName), outputPreview = childFile(folder, payload.outputPreviewName), outputManifest = childFile(folder, payload.outputManifestName);
-        var previous = currentDocumentOrNull(), document = null, previewDocument = null, attemptedOutputs = [];
+        var previous = currentDocumentOrNull(), document = null, previewDocument = null, attemptedOutputs = [], placementDiagnostics = {};
         var previousDialogs = null;
         try { previousDialogs = app.displayDialogs; app.displayDialogs = DialogModes.NO; } catch (_createDialogReadError) {}
         try {
@@ -3844,7 +4016,7 @@
             var assetKeys = ownKeys(payload.assets);
             for (var assetIndex = 0; assetIndex < assetKeys.length; assetIndex++) {
                 var assetRole = assetKeys[assetIndex], placement = payload.placements && own(payload.placements, assetRole) ? payload.placements[assetRole] : null;
-                semantic[assetRole] = placeMatchAsset(document, folder, assetRole, payload.assets[assetRole], groups, placement, payload.style.accentColor, payload.style.layoutPreset, semantic, warnings, artDirection);
+                semantic[assetRole] = placeMatchAsset(document, folder, assetRole, payload.assets[assetRole], groups, placement, payload.style.accentColor, payload.style.layoutPreset, semantic, warnings, artDirection, placementDiagnostics);
                 if (
                     payload.style.layoutPreset === ECCW_PANEL_LAYOUT_PRESET &&
                     (assetRole === "competitorLeft" || assetRole === "competitorRight")
@@ -3868,7 +4040,7 @@
             stage = "validate deterministic preview";
             validateEccwPreviewLayout(document, semantic, payload.style.layoutPreset, payload.assets, payload.text, groups, approvedEccwFont, artDirection);
             var artDirectionRecord = artDirection ?
-                buildEccwArtDirectionRecord(document, semantic, groups, requestedArtDirection, artDirection, approvedEccwFont) :
+                buildEccwArtDirectionRecord(document, semantic, groups, requestedArtDirection, artDirection, approvedEccwFont, placementDiagnostics.showLogo) :
                 null;
 
             stage = "save layered PSD";
@@ -3901,6 +4073,7 @@
                 baleCcImported: true,
                 protectedAssetsPlacedAsSmartObjects: true,
                 originalAssetsPreserved: true,
+                logoPlacement: placementDiagnostics.showLogo ? cloneJsonValue(placementDiagnostics.showLogo) : null,
                 warnings: warnings
             };
         } catch (error) {
@@ -3984,7 +4157,7 @@
     function visibilityTarget(references, role) {
         return references[role] || null;
     }
-    function applyExistingAssetPlacement(document, references, groups, role, placementChanges, previousPlacement, accentColor, layoutPreset, artDirection) {
+    function applyExistingAssetPlacement(document, references, groups, role, placementChanges, previousPlacement, accentColor, layoutPreset, artDirection, logoSourceGeometry, placementDiagnostics) {
         var layer = references[role], effective = mergedPlacement(previousPlacement, placementChanges);
         var isEccwCoreAsset = layoutPreset === ECCW_PANEL_LAYOUT_PRESET && valueInList(role, ["competitorLeft", "competitorRight", "showLogo"]);
         if (isEccwCoreAsset) {
@@ -4001,7 +4174,7 @@
                 applyMandatoryEccwCutoffMask(document, layer, role, unmaskedBounds, Number(artDirection[role].cutoffY));
                 setEccwCompetitorShadow(document, layer, artDirection[role]);
             } else {
-                applyEccwVisibleContentPlacement(document, layer, role, artDirection);
+                applyEccwVisibleContentPlacement(document, layer, role, artDirection, logoSourceGeometry, placementDiagnostics);
                 setLayerEffectsForPlacement(document, layer, placementChanges, accentColor);
             }
             return;
@@ -4182,7 +4355,7 @@
         var outputPsd = childFile(folder, payload.outputPsdName), outputPreview = childFile(folder, payload.outputPreviewName), outputManifest = childFile(folder, payload.outputManifestName);
         if (outputPsd.exists || outputPreview.exists || outputManifest.exists) throw new Error("One or more update output files already exist; use new versioned names.");
 
-        var previous = currentDocumentOrNull(), sourceDocument = null, sourceOwned = false, workingDocument = null, previewDocument = null, attemptedOutputs = [], warnings = [];
+        var previous = currentDocumentOrNull(), sourceDocument = null, sourceOwned = false, workingDocument = null, previewDocument = null, attemptedOutputs = [], warnings = [], placementDiagnostics = {};
         var approvedEccwFont = null;
         var updateRequestedArtDirection = previousManifest.artDirection ? cloneJsonValue(previousManifest.artDirection.requested) : {};
         var updateArtDirection = previousManifest.layoutPreset === ECCW_PANEL_LAYOUT_PRESET ?
@@ -4317,14 +4490,17 @@
                     if (references[assetRole]) {
                         if (!isSmartObject(references[assetRole])) throw new Error("Semantic asset role is not a Smart Object: " + assetRole);
                         inspectCompetitorTransparencyBeforePlacement(assetFile, assetRole, warnings);
+                        var replacementLogoSourceGeometry = previousManifest.layoutPreset === ECCW_PANEL_LAYOUT_PRESET && assetRole === "showLogo" ?
+                            inspectEccwLogoSourceAlphaGeometry(assetFile) :
+                            null;
                         workingDocument.activeLayer = references[assetRole];
                         replaceSelectedSmartObject(assetFile);
                         if (placement) {
                             var previousAssetPlacement = own(previousManifest.placements, assetRole) ? previousManifest.placements[assetRole] : null;
-                            applyExistingAssetPlacement(workingDocument, references, groups, assetRole, placement, previousAssetPlacement, currentStyle.accentColor, previousManifest.layoutPreset, updateArtDirection);
+                            applyExistingAssetPlacement(workingDocument, references, groups, assetRole, placement, previousAssetPlacement, currentStyle.accentColor, previousManifest.layoutPreset, updateArtDirection, replacementLogoSourceGeometry, placementDiagnostics);
                         }
                     } else {
-                        references[assetRole] = placeMatchAsset(workingDocument, folder, assetRole, payload.changes.assets[assetRole], groups, placement, currentStyle.accentColor, previousManifest.layoutPreset, references, warnings, updateArtDirection);
+                        references[assetRole] = placeMatchAsset(workingDocument, folder, assetRole, payload.changes.assets[assetRole], groups, placement, currentStyle.accentColor, previousManifest.layoutPreset, references, warnings, updateArtDirection, placementDiagnostics);
                     }
                 }
             }
@@ -4337,7 +4513,10 @@
                     if (own(payload.changes, "assets") && own(payload.changes.assets, role)) continue;
                     if (!references[role] || !isSmartObject(references[role])) throw new Error("Placement role is not an existing Smart Object: " + role);
                     var previousPlacement = own(previousManifest.placements, role) ? previousManifest.placements[role] : null;
-                    applyExistingAssetPlacement(workingDocument, references, groups, role, payload.changes.placements[role], previousPlacement, currentStyle.accentColor, previousManifest.layoutPreset, updateArtDirection);
+                    var existingLogoSourceGeometry = previousManifest.layoutPreset === ECCW_PANEL_LAYOUT_PRESET && role === "showLogo" ?
+                        inspectEccwLogoSourceAlphaGeometry(childFile(folder, previousManifest.assets.showLogo)) :
+                        null;
+                    applyExistingAssetPlacement(workingDocument, references, groups, role, payload.changes.placements[role], previousPlacement, currentStyle.accentColor, previousManifest.layoutPreset, updateArtDirection, existingLogoSourceGeometry, placementDiagnostics);
                 }
             }
 
@@ -4410,7 +4589,12 @@
                     groups,
                     updateRequestedArtDirection,
                     updateArtDirection,
-                    approvedEccwFont
+                    approvedEccwFont,
+                    placementDiagnostics.showLogo || (
+                        previousManifest.artDirection && previousManifest.artDirection.logoPlacement ?
+                            previousManifest.artDirection.logoPlacement :
+                            null
+                    )
                 );
             }
             validateMatchCardManifest(updatedManifest);
@@ -4426,6 +4610,7 @@
                 baleCcPreservedOrImported: true,
                 previousVersionPreserved: true,
                 protectedAssetsPlacedAsSmartObjects: true,
+                logoPlacement: placementDiagnostics.showLogo ? cloneJsonValue(placementDiagnostics.showLogo) : null,
                 warnings: warnings
             };
         } catch (error) {

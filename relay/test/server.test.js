@@ -1085,7 +1085,7 @@ test("ECCW worker preset preserves the template and validates deterministic plac
   assert.match(placementSource, /placement\.nonGenerativeMask = true/);
   assert.match(
     workerSource,
-    /function applyEccwVisibleContentPlacement\(document, layer, role, artDirection\)/
+    /function applyEccwVisibleContentPlacement\(document, layer, role, artDirection, logoSourceGeometry, placementDiagnostics\)/
   );
   assert.match(
     workerSource,
@@ -1165,6 +1165,117 @@ test("ECCW worker preset preserves the template and validates deterministic plac
   assert.match(workerSource, /role \+ " is not below the live text and finishing groups\."/);
   assert.match(workerSource, /validateEccwPreviewLayout\(document, semantic/);
   assert.match(workerSource, /rectangleGeometry\.width \* rectangleGeometry\.height > canvasArea \* 0\.25/);
+});
+
+test("ECCW logo placement derives final width from transparent source pixels", () => {
+  const workerSource = readFileSync(
+    path.resolve(process.cwd(), "..", "local-agent", "bridge-worker.jsx"),
+    "utf8"
+  );
+  const calculationStart = workerSource.indexOf(
+    "function calculateEccwLogoScaleDiagnostics("
+  );
+  const formatterStart = workerSource.indexOf(
+    "\n    function formatEccwLogoWidthVerificationFailure(",
+    calculationStart
+  );
+  const placementStart = workerSource.indexOf(
+    "\n    function applyEccwLogoAlphaPlacement(",
+    formatterStart
+  );
+  const visiblePlacementStart = workerSource.indexOf(
+    "\n    function applyEccwVisibleContentPlacement(",
+    placementStart
+  );
+  const placeAssetStart = workerSource.indexOf("function placeMatchAsset(");
+  const placeAssetEnd = workerSource.indexOf(
+    "\n    function fontRoleForText(",
+    placeAssetStart
+  );
+  assert.ok(calculationStart >= 0);
+  assert.ok(formatterStart > calculationStart);
+  assert.ok(placementStart > formatterStart);
+  assert.ok(visiblePlacementStart > placementStart);
+  assert.ok(placeAssetStart >= 0);
+  assert.ok(placeAssetEnd > placeAssetStart);
+
+  const calculation = Function(
+    `"use strict"; return (${workerSource.slice(calculationStart, formatterStart).trim()});`
+  )();
+  const formatFailure = Function(
+    `"use strict"; return (${workerSource.slice(formatterStart, placementStart).trim()});`
+  )();
+
+  // Representative transparent PNG: the 1,536 px document is much wider
+  // than its 512 px alpha-visible logo. Photoshop initially placed that
+  // alpha at 128 px, so the worker must correct the existing transform while
+  // preserving the absolute requested/source scale.
+  const passed = calculation(1536, 512, 260, 128, 260.4, 1);
+  assert.equal(passed.sourceFullImageWidth, 1536);
+  assert.equal(passed.sourceAlphaVisibleWidth, 512);
+  assert.equal(passed.requestedAlphaVisibleWidth, 260);
+  assert.equal(passed.appliedScaleFactor, 260 / 512);
+  assert.equal(passed.appliedScalePercentage, (260 / 512) * 100);
+  assert.equal(passed.placementCorrectionFactor, 260 / 128);
+  assert.equal(passed.measuredPlacedAlphaVisibleWidth, 260.4);
+  assert.ok(Math.abs(passed.differenceFromRequestedWidth - 0.4) < 1e-9);
+  assert.equal(passed.verificationTolerance, 1);
+  assert.equal(passed.verificationPassed, true);
+  assert.deepEqual(passed.postScaleContainmentOrNormalization, []);
+
+  const failed = calculation(1536, 512, 260, 128, 253, 1);
+  assert.equal(failed.verificationPassed, false);
+  const message = formatFailure(failed);
+  assert.match(message, /expected=260\.0000px/);
+  assert.match(message, /measured=253\.0000px/);
+  assert.match(message, /sourceAlpha=512\.0000px/);
+  assert.match(message, /sourceFull=1536\.0000px/);
+  assert.match(message, /appliedScaleFactor=0\.50781250/);
+  assert.match(message, /appliedScalePercent=50\.7813%/);
+  assert.match(message, /difference=7\.0000px/);
+  assert.match(message, /tolerance=1\.0000px/);
+  assert.match(message, /verificationPassed=false/);
+  assert.match(message, /postScaleContainmentOrNormalization=none/);
+
+  const logoPlacementSource = workerSource.slice(
+    placementStart,
+    visiblePlacementStart
+  );
+  assert.match(
+    workerSource,
+    /transparencyReference\.putEnumerated\(charIDToTypeID\("Chnl"\), charIDToTypeID\("Chnl"\), charIDToTypeID\("Trsp"\)\)/
+  );
+  assert.match(
+    workerSource,
+    /sourceDocument\.duplicate\("__ECCW_LOGO_ALPHA_INSPECTION__", true\)/
+  );
+  assert.match(
+    logoPlacementSource,
+    /layer\.resize\(preliminary\.placementCorrectionPercentage, preliminary\.placementCorrectionPercentage, AnchorPosition\.MIDDLECENTER\)/
+  );
+  assert.match(
+    logoPlacementSource,
+    /activeLayerTransparencyBounds\(document, layer, "placed showLogo after offsets"\)/
+  );
+  assert.ok(
+    logoPlacementSource.indexOf("layer.resize(") <
+      logoPlacementSource.indexOf("layer.translate(")
+  );
+  assert.doesNotMatch(
+    logoPlacementSource,
+    /applyLayerPlacement|fitMode|maxWidth|maxHeight/
+  );
+  const placeAssetSource = workerSource.slice(placeAssetStart, placeAssetEnd);
+  assert.match(
+    placeAssetSource,
+    /layoutPreset === ECCW_PANEL_LAYOUT_PRESET && role === "showLogo"/
+  );
+  assert.match(
+    placeAssetSource,
+    /applyLayerPlacement\(document, layer, role, placement \|\| null, "contain", layoutPreset\)/
+  );
+  assert.match(workerSource, /logoPlacement: placementDiagnostics\.showLogo/);
+  assert.match(workerSource, /record\.logoPlacement = cloneJsonValue\(logoPlacementDiagnostics\)/);
 });
 
 test("createMatchCard accepts every protected local asset role", async () => {
