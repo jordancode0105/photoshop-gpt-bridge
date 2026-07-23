@@ -2,7 +2,8 @@
 
 const assert = require("node:assert/strict");
 const { after, before, test } = require("node:test");
-const { spawn } = require("node:child_process");
+const { execFileSync, spawn } = require("node:child_process");
+const path = require("node:path");
 
 const port = 32_000 + (process.pid % 1_000);
 const baseUrl = `http://127.0.0.1:${port}`;
@@ -488,6 +489,68 @@ test("legacy claimants cannot claim PowerShell match-card jobs", async () => {
   assert.equal(publicFailure.status, "failed");
   assert.equal(publicFailure.error.includes("C:\\Users"), false);
 });
+
+test(
+  "PowerShell inventory completion sends one schema-valid result object",
+  { skip: process.platform === "win32" ? false : "requires Windows PowerShell" },
+  async () => {
+    const contractScript = path.resolve(
+      process.cwd(),
+      "..",
+      "local-agent",
+      "test-inventory-result-shape.ps1"
+    );
+    const completionBody = JSON.parse(
+      execFileSync(
+        "powershell.exe",
+        [
+          "-NoProfile",
+          "-NonInteractive",
+          "-ExecutionPolicy",
+          "Bypass",
+          "-File",
+          contractScript,
+        ],
+        { cwd: process.cwd(), encoding: "utf8" }
+      ).trim()
+    );
+
+    assert.deepEqual(Object.keys(completionBody), ["result"]);
+    assert.equal(Array.isArray(completionBody.result), false);
+    assert.equal(typeof completionBody.result, "object");
+    assert.deepEqual(Object.keys(completionBody.result).sort(), [
+      "assets",
+      "baleCcConfigured",
+      "baleCcPackageFileName",
+      "recursive",
+      "supportedExtensions",
+    ]);
+    assert.deepEqual(completionBody.result.supportedExtensions, [
+      ".png",
+      ".jpg",
+      ".jpeg",
+      ".psd",
+      ".tif",
+      ".tiff",
+    ]);
+    assert.equal(completionBody.result.recursive, false);
+
+    const created = await request("/api/jobs/list-match-card-assets", { body: {} });
+    assert.equal(created.response.status, 202);
+    const claimed = await pluginRequest({ capability: "powershell-v1" });
+    assert.equal(claimed.response.status, 200);
+    assert.equal(claimed.body.id, created.body.jobId);
+    assert.equal(claimed.body.type, "listMatchCardAssets");
+
+    const completed = await finalizePluginJob(claimed.body.id, "complete", completionBody);
+    assert.equal(completed.response.status, 200);
+    assert.deepEqual(completed.body, { ok: true });
+
+    const publicResult = await getJob(claimed.body.id);
+    assert.equal(publicResult.status, "succeeded");
+    assert.deepEqual(publicResult.result, completionBody.result);
+  }
+);
 
 test("PowerShell claimant can still claim existing operation jobs", async () => {
   const created = await request("/api/jobs/inspect-document", {

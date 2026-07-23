@@ -310,7 +310,10 @@ var BRIDGE_OUTPUT_PATH = $(ConvertTo-JsxStringLiteral -Value $outputPath);
         $workerSource = Get-Content -LiteralPath $workerPath -Raw
         ($wrapperHeader + "`r`n" + $workerSource) | Set-Content -LiteralPath $wrapperPath -Encoding UTF8
 
-        $Photoshop.BringToFront()
+        # COM method return values participate in the PowerShell output
+        # pipeline. Suppress this one so the worker result remains the sole
+        # object returned by Invoke-PhotoshopJob.
+        $null = $Photoshop.BringToFront()
         $null = $Photoshop.DoJavaScriptFile($wrapperPath, @(), 1)
 
         if (-not (Test-Path -LiteralPath $outputPath -PathType Leaf)) { throw "Photoshop completed without creating a result file." }
