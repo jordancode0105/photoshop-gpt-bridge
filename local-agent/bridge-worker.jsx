@@ -2153,6 +2153,47 @@
         document.activeLayer = layer;
         return layer;
     }
+    function safeBaleStageErrorMessage(error) {
+        var message = error && error.message ? String(error.message) : String(error);
+        return message
+            .replace(/[A-Za-z]:[\\\/][^\r\n]*/g, "[local path omitted]")
+            .replace(/\\\\[^\\\r\n]+\\[^\r\n]*/g, "[local path omitted]")
+            .replace(/\s+/g, " ");
+    }
+    function duplicateBaleCcGroupFromSource(sourceDocument, sourceGroup, destinationDocument) {
+        var imported = null, operationError = null, restorationError = null;
+        var phase = "activating the Bale source document";
+        try {
+            app.activeDocument = sourceDocument;
+            if (app.activeDocument !== sourceDocument) {
+                throw new Error("Photoshop did not make the Bale source document active.");
+            }
+
+            phase = "duplicating the Bale CC group";
+            imported = sourceGroup.duplicate(destinationDocument, ElementPlacement.PLACEATBEGINNING);
+        } catch (error) {
+            operationError = new Error("Bale CC import failed while " + phase + ": " + safeBaleStageErrorMessage(error));
+        } finally {
+            try {
+                app.activeDocument = destinationDocument;
+                if (app.activeDocument !== destinationDocument) {
+                    throw new Error("Photoshop did not restore the destination match-card document.");
+                }
+            } catch (restoreError) {
+                restorationError = new Error(
+                    "Bale CC import failed while reactivating the destination match-card document: " +
+                    safeBaleStageErrorMessage(restoreError)
+                );
+            }
+        }
+
+        if (operationError) {
+            if (restorationError) throw new Error(operationError.message + " " + restorationError.message);
+            throw operationError;
+        }
+        if (restorationError) throw restorationError;
+        return imported;
+    }
     function importBaleCcGroup(input, targetDocument) {
         var baleCc = configuredBaleCc(input, true), folder = matchWorkingFolder(input), packageFile = childFile(folder, baleCc.packageFileName);
         if (!packageFile.exists) throw new Error("Missing Bale CC package: " + baleCc.packageFileName);
@@ -2169,7 +2210,7 @@
             wrapper = targetDocument.layerSets.add();
             wrapper.name = "00 - BALE CC";
             try { wrapper.blendMode = BlendMode.PASSTHROUGH; } catch (_balePassThroughError) {}
-            imported = matches[0].duplicate(targetDocument, ElementPlacement.PLACEATBEGINNING);
+            imported = duplicateBaleCcGroupFromSource(packageDocument, matches[0], targetDocument);
             imported.move(wrapper, ElementPlacement.INSIDE);
             imported.name = baleCc.groupName;
             return { wrapper: wrapper, sourceGroup: imported };
@@ -2192,8 +2233,7 @@
             var matches = [];
             findNamedGroups(packageDocument.layers, baleCc.groupName, matches);
             if (matches.length !== 1) throw new Error('Expected exactly one Bale CC group named "' + baleCc.groupName + '"; found ' + matches.length + ".");
-            imported = matches[0].duplicate(targetDocument, ElementPlacement.PLACEATBEGINNING);
-            app.activeDocument = targetDocument;
+            imported = duplicateBaleCcGroupFromSource(packageDocument, matches[0], targetDocument);
             imported.move(wrapper, ElementPlacement.INSIDE);
             imported.name = baleCc.groupName;
             return imported;

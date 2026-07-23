@@ -3,6 +3,7 @@
 const assert = require("node:assert/strict");
 const { after, before, test } = require("node:test");
 const { execFileSync, spawn } = require("node:child_process");
+const { readFileSync } = require("node:fs");
 const path = require("node:path");
 
 const port = 32_000 + (process.pid % 1_000);
@@ -551,6 +552,57 @@ test(
     assert.deepEqual(publicResult.result, completionBody.result);
   }
 );
+
+test("Bale import activates its source document and restores its destination", () => {
+  const workerSource = readFileSync(
+    path.resolve(process.cwd(), "..", "local-agent", "bridge-worker.jsx"),
+    "utf8"
+  );
+  const helperStart = workerSource.indexOf("function duplicateBaleCcGroupFromSource(");
+  const helperEnd = workerSource.indexOf("\n    function importBaleCcGroup(", helperStart);
+  assert.notEqual(helperStart, -1);
+  assert.notEqual(helperEnd, -1);
+  const helperSource = workerSource.slice(helperStart, helperEnd);
+
+  const sourceActivation = helperSource.indexOf("app.activeDocument = sourceDocument;");
+  const sourceVerification = helperSource.indexOf("app.activeDocument !== sourceDocument");
+  const duplicateCall = helperSource.indexOf(
+    "sourceGroup.duplicate(destinationDocument, ElementPlacement.PLACEATBEGINNING)"
+  );
+  const finallyBlock = helperSource.indexOf("finally");
+  const destinationActivation = helperSource.indexOf(
+    "app.activeDocument = destinationDocument;",
+    finallyBlock
+  );
+  const destinationVerification = helperSource.indexOf(
+    "app.activeDocument !== destinationDocument",
+    destinationActivation
+  );
+
+  assert.ok(sourceActivation >= 0);
+  assert.ok(sourceActivation < sourceVerification);
+  assert.ok(sourceVerification < duplicateCall);
+  assert.ok(duplicateCall < finallyBlock);
+  assert.ok(finallyBlock < destinationActivation);
+  assert.ok(destinationActivation < destinationVerification);
+  assert.equal(
+    (
+      workerSource.match(
+        /duplicateBaleCcGroupFromSource\(packageDocument, matches\[0\], targetDocument\)/g
+      ) || []
+    ).length,
+    2
+  );
+  assert.doesNotMatch(workerSource, /matches\[0\]\.duplicate\(/);
+  assert.equal(
+    (
+      workerSource.match(
+        /if \(ownedDocument && packageDocument\) try \{ packageDocument\.close\(SaveOptions\.DONOTSAVECHANGES\); \}/g
+      ) || []
+    ).length,
+    2
+  );
+});
 
 test("PowerShell claimant can still claim existing operation jobs", async () => {
   const created = await request("/api/jobs/inspect-document", {
