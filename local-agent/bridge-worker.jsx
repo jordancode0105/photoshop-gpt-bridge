@@ -277,6 +277,32 @@
             return { left: toPixels(b[0]), top: toPixels(b[1]), right: toPixels(b[2]), bottom: toPixels(b[3]) };
         } catch (_noEffectBoundsError) { return safeBounds(layer); }
     }
+    function descriptorUnitBound(boundsDescriptor, stringKey, charKey) {
+        var stringId = stringIDToTypeID(stringKey), charId = charIDToTypeID(charKey);
+        if (boundsDescriptor.hasKey(stringId)) return Number(boundsDescriptor.getUnitDoubleValue(stringId));
+        if (boundsDescriptor.hasKey(charId)) return Number(boundsDescriptor.getUnitDoubleValue(charId));
+        throw new Error("Missing " + stringKey + " bound.");
+    }
+    function safeBoundsWithoutMask(layer) {
+        try {
+            var propertyId = stringIDToTypeID("boundsNoMask"), layerId = safeLayerId(layer);
+            if (!layerId) return null;
+            var reference = new ActionReference();
+            reference.putProperty(charIDToTypeID("Prpr"), propertyId);
+            reference.putIdentifier(charIDToTypeID("Lyr "), layerId);
+            var layerDescriptor = executeActionGet(reference);
+            if (!layerDescriptor.hasKey(propertyId)) return null;
+            var boundsDescriptor = layerDescriptor.getObjectValue(propertyId);
+            return {
+                left: descriptorUnitBound(boundsDescriptor, "left", "Left"),
+                top: descriptorUnitBound(boundsDescriptor, "top", "Top "),
+                right: descriptorUnitBound(boundsDescriptor, "right", "Rght"),
+                bottom: descriptorUnitBound(boundsDescriptor, "bottom", "Btom")
+            };
+        } catch (_boundsWithoutMaskError) {
+            return null;
+        }
+    }
     function serializeLayer(layer, parentNames, indexPath) {
         var names = parentNames.slice(0); names.push(layer.name);
         var textLayer = isTextLayer(layer);
@@ -1295,6 +1321,12 @@
     var ECCW_PANEL_TEMPLATE_FILE_NAME = "ECCW_JordanSinner_vs_EddieSlayer_template_bg_v1.png";
     var ECCW_PANEL_CANVAS_WIDTH = 1920;
     var ECCW_PANEL_CANVAS_HEIGHT = 1080;
+    var ECCW_COMPETITOR_VISIBLE_TOP = 150;
+    var ECCW_COMPETITOR_VISIBLE_CENTER_Y = 500;
+    var ECCW_COMPETITOR_SOURCE_HEIGHT = 847;
+    var ECCW_COMPETITOR_CUTOFF_Y = 850;
+    var ECCW_LOGO_VISIBLE_WIDTH = 240;
+    var ECCW_LOGO_VISIBLE_CENTER_Y = 85;
     var MATCH_VISIBILITY_ROLES = [
         "templateBackground", "atmosphere", "framesAndPanels", "competitorRenders",
         "championshipAndBelt", "matchTitleGroup", "eventInformation", "showLogoGroup",
@@ -1751,7 +1783,7 @@
         if (layoutPreset === ECCW_PANEL_LAYOUT_PRESET) {
             return [
                 "00 - BALE CC", "10 - TEMPLATE BACKGROUND", "40 - COMPETITOR RENDERS",
-                "60 - MATCH TITLE", "70 - EVENT INFORMATION", "80 - SHOW LOGO"
+                "80 - SHOW LOGO", "60 - MATCH TITLE", "70 - EVENT INFORMATION"
             ];
         }
         return [
@@ -1835,23 +1867,33 @@
     }
     function createMatchCardGroups(document, layoutPreset) {
         var groups = {};
+        var definitions = MATCH_GROUP_DEFINITIONS;
+        if (layoutPreset === ECCW_PANEL_LAYOUT_PRESET) {
+            // Photoshop inserts every new group at the top. This creation order
+            // produces the required bottom-to-top stack:
+            // template, competitors, logo, live match text, live event text.
+            definitions = [
+                MATCH_GROUP_DEFINITIONS[0],
+                MATCH_GROUP_DEFINITIONS[3],
+                MATCH_GROUP_DEFINITIONS[7],
+                MATCH_GROUP_DEFINITIONS[5],
+                MATCH_GROUP_DEFINITIONS[6]
+            ];
+        }
         // Photoshop inserts new groups at the top. Creating 10 through 90
         // therefore leaves finishing overlays above the opaque background.
-        for (var i = 0; i < MATCH_GROUP_DEFINITIONS.length; i++) {
-            if (
-                layoutPreset === ECCW_PANEL_LAYOUT_PRESET &&
-                !valueInList(MATCH_GROUP_DEFINITIONS[i].role, [
-                    "templateBackground", "competitorRenders", "matchTitleGroup",
-                    "eventInformation", "showLogoGroup"
-                ])
-            ) {
-                continue;
-            }
+        for (var i = 0; i < definitions.length; i++) {
             var group = document.layerSets.add();
-            group.name = MATCH_GROUP_DEFINITIONS[i].name;
-            groups[MATCH_GROUP_DEFINITIONS[i].role] = group;
+            group.name = definitions[i].name;
+            groups[definitions[i].role] = group;
         }
         return groups;
+    }
+    function ensureEccwGroupOrder(document, groups) {
+        app.activeDocument = document;
+        groups.showLogoGroup.move(groups.competitorRenders, ElementPlacement.PLACEBEFORE);
+        groups.matchTitleGroup.move(groups.showLogoGroup, ElementPlacement.PLACEBEFORE);
+        groups.eventInformation.move(groups.matchTitleGroup, ElementPlacement.PLACEBEFORE);
     }
     function createRectangleFill(document, group, name, bounds, color, opacity, blendMode) {
         app.activeDocument = document;
@@ -2032,6 +2074,89 @@
         var descriptor = executeActionGet(reference), key = stringIDToTypeID("hasUserMask");
         return descriptor.hasKey(key) && descriptor.getBoolean(key);
     }
+    function activeUserMaskSelectionBounds(document, layer) {
+        app.activeDocument = document;
+        document.activeLayer = layer;
+        var descriptor = new ActionDescriptor(), selectionReference = new ActionReference(), maskReference = new ActionReference();
+        selectionReference.putProperty(charIDToTypeID("Chnl"), charIDToTypeID("fsel"));
+        descriptor.putReference(charIDToTypeID("null"), selectionReference);
+        maskReference.putEnumerated(charIDToTypeID("Chnl"), charIDToTypeID("Chnl"), charIDToTypeID("Msk "));
+        descriptor.putReference(charIDToTypeID("T   "), maskReference);
+        executeAction(charIDToTypeID("setd"), descriptor, DialogModes.NO);
+        try {
+            var bounds = document.selection.bounds;
+            return {
+                left: toPixels(bounds[0]),
+                top: toPixels(bounds[1]),
+                right: toPixels(bounds[2]),
+                bottom: toPixels(bounds[3])
+            };
+        } finally {
+            try { document.selection.deselect(); } catch (_eccwMaskSelectionDeselectError) {}
+        }
+    }
+    function applyMandatoryEccwCutoffMask(document, layer, role, unmaskedBounds) {
+        if (layerHasUserMask(layer)) throw new Error(role + " already has an unowned layer mask before ECCW cutoff masking.");
+        if (!unmaskedBounds || unmaskedBounds.bottom <= ECCW_COMPETITOR_CUTOFF_Y + 10) {
+            throw new Error(role + " does not extend below the ECCW cutoff; the required mask would conceal no render pixels.");
+        }
+        addSelectionMask(document, layer, {
+            left: 0,
+            top: 0,
+            right: ECCW_PANEL_CANVAS_WIDTH,
+            bottom: ECCW_COMPETITOR_CUTOFF_Y
+        });
+        if (!layerHasUserMask(layer)) throw new Error(role + " cutoff failed: Photoshop did not create a real user layer mask.");
+        var revealBounds;
+        try {
+            revealBounds = activeUserMaskSelectionBounds(document, layer);
+        } catch (error) {
+            throw new Error(role + " cutoff failed while verifying the user mask: " + error.message);
+        }
+        var tolerance = 1;
+        if (
+            Math.abs(revealBounds.left) > tolerance ||
+            Math.abs(revealBounds.top) > tolerance ||
+            Math.abs(revealBounds.right - ECCW_PANEL_CANVAS_WIDTH) > tolerance ||
+            Math.abs(revealBounds.bottom - ECCW_COMPETITOR_CUTOFF_Y) > tolerance
+        ) {
+            throw new Error(role + " cutoff mask does not reveal exactly the canvas area above y=" + ECCW_COMPETITOR_CUTOFF_Y + ".");
+        }
+    }
+    function measureBoundsBehindEccwMask(document, layer, role) {
+        var directBounds = safeBoundsWithoutMask(layer);
+        if (directBounds) return directBounds;
+        var unmaskedBounds = null, restoreError = null;
+        deleteActiveUserMask(document, layer);
+        try {
+            unmaskedBounds = safeTransformBounds(layer);
+        } finally {
+            try {
+                addSelectionMask(document, layer, {
+                    left: 0,
+                    top: 0,
+                    right: ECCW_PANEL_CANVAS_WIDTH,
+                    bottom: ECCW_COMPETITOR_CUTOFF_Y
+                });
+            } catch (error) {
+                restoreError = error;
+            }
+        }
+        if (restoreError || !layerHasUserMask(layer)) {
+            throw new Error(role + " cutoff validation could not restore the mandatory user mask: " + (restoreError ? restoreError.message : "mask is missing"));
+        }
+        var restoredRevealBounds = activeUserMaskSelectionBounds(document, layer);
+        if (
+            Math.abs(restoredRevealBounds.left) > 1 ||
+            Math.abs(restoredRevealBounds.top) > 1 ||
+            Math.abs(restoredRevealBounds.right - ECCW_PANEL_CANVAS_WIDTH) > 1 ||
+            Math.abs(restoredRevealBounds.bottom - ECCW_COMPETITOR_CUTOFF_Y) > 1
+        ) {
+            throw new Error(role + " cutoff validation restored an invalid user mask.");
+        }
+        if (!unmaskedBounds) throw new Error("Could not measure alpha-visible bounds behind the user mask for " + role + ".");
+        return unmaskedBounds;
+    }
     function findLayersNamed(layers, name, matches) {
         for (var i = 0; i < layers.length; i++) {
             if (layers[i].name === name) matches.push(layers[i]);
@@ -2149,26 +2274,66 @@
             restoreActiveDocument(previous);
         }
     }
+    function applyEccwVisibleContentPlacement(document, layer, role) {
+        app.activeDocument = document;
+        document.activeLayer = layer;
+        var initialBounds = safeTransformBounds(layer);
+        if (!initialBounds) throw new Error("Could not read alpha-visible bounds for " + role + ".");
+        var initial = rect(initialBounds);
+        if (initial.width <= 0 || initial.height <= 0) throw new Error(role + " has empty alpha-visible bounds.");
+        var scaleRatio, expectedCenterX, expectedCenterY = null, expectedTop = null;
+        if (role === "competitorLeft" || role === "competitorRight") {
+            scaleRatio = ECCW_COMPETITOR_SOURCE_HEIGHT / initial.height;
+            expectedCenterX = role === "competitorLeft" ? 480 : 1440;
+            expectedTop = ECCW_COMPETITOR_VISIBLE_TOP;
+        } else if (role === "showLogo") {
+            scaleRatio = ECCW_LOGO_VISIBLE_WIDTH / initial.width;
+            expectedCenterX = 960;
+            expectedCenterY = ECCW_LOGO_VISIBLE_CENTER_Y;
+        } else {
+            throw new Error("Unsupported ECCW alpha-aware placement role: " + role);
+        }
+        layer.resize(scaleRatio * 100, scaleRatio * 100, AnchorPosition.MIDDLECENTER);
+        var resizedBounds = safeTransformBounds(layer);
+        if (!resizedBounds) throw new Error("Could not read alpha-visible bounds after sizing " + role + ".");
+        var desiredY = expectedCenterY === null ? expectedTop + ((resizedBounds.bottom - resizedBounds.top) / 2) : expectedCenterY;
+        layer.translate(
+            UnitValue(expectedCenterX - ((resizedBounds.left + resizedBounds.right) / 2), "px"),
+            UnitValue(desiredY - ((resizedBounds.top + resizedBounds.bottom) / 2), "px")
+        );
+        var placedBounds = safeTransformBounds(layer);
+        if (!placedBounds) throw new Error("Could not read final alpha-visible bounds for " + role + ".");
+        var placed = rect(placedBounds);
+        if (Math.abs(placed.centerX - expectedCenterX) > 1) throw new Error(role + " alpha-visible content is not horizontally centered.");
+        if (expectedTop !== null && Math.abs(placed.top - expectedTop) > 1) throw new Error(role + " alpha-visible content does not begin near y=" + expectedTop + ".");
+        if (expectedCenterY !== null && Math.abs(placed.centerY - expectedCenterY) > 1) throw new Error(role + " alpha-visible content is not vertically centered.");
+        if (role === "showLogo" && (placed.width < 230 || placed.width > 250)) throw new Error("showLogo alpha-visible width is outside 230 through 250 pixels.");
+        if ((role === "competitorLeft" || role === "competitorRight") && (placed.height < 835 || placed.height > 855)) {
+            throw new Error(role + " alpha-visible height is not 135 through 145 percent of the v6 605-pixel placement.");
+        }
+        return placedBounds;
+    }
     function deterministicEccwPlacement(role, requestedPlacement, warnings) {
         var geometry = null;
-        if (role === "competitorLeft") geometry = { x: 500, y: 542, maxWidth: 740, maxHeight: 605 };
-        else if (role === "competitorRight") geometry = { x: 1420, y: 542, maxWidth: 740, maxHeight: 605 };
-        else if (role === "showLogo") geometry = { x: 960, y: 105, maxWidth: 300, maxHeight: 105 };
+        if (role === "competitorLeft") geometry = { x: 480, y: 500, maxWidth: 740, maxHeight: 605, scale: 1.4 };
+        else if (role === "competitorRight") geometry = { x: 1440, y: 500, maxWidth: 740, maxHeight: 605, scale: 1.4 };
+        else if (role === "showLogo") geometry = { x: 960, y: ECCW_LOGO_VISIBLE_CENTER_Y, maxWidth: 240, maxHeight: 170, scale: 1 };
         if (!geometry) return requestedPlacement ? cloneJsonValue(requestedPlacement) : null;
         var placement = {
             coordinateSpace: "pixels",
             x: geometry.x,
             y: geometry.y,
             fitMode: "contain",
-            scale: 1,
+            scale: geometry.scale,
             maxWidth: geometry.maxWidth,
             maxHeight: geometry.maxHeight
         };
+        if (role === "competitorLeft" || role === "competitorRight") placement.nonGenerativeMask = true;
         if (requestedPlacement) {
-            if (requestedPlacement.clippingMask === true || requestedPlacement.nonGenerativeMask === true) {
+            if (requestedPlacement.clippingMask === true) {
                 warnings.push(
-                    "The ECCW panel preset skipped optional generated masking for " + role +
-                    " so transparent pixels remain intact and no backing rectangle is introduced."
+                    "The ECCW panel preset replaced requested clipping for " + role +
+                    " with its mandatory non-destructive y=850 user layer mask; no clipping base or backing rectangle was created."
                 );
             }
             if (own(requestedPlacement, "dropShadow")) placement.dropShadow = requestedPlacement.dropShadow;
@@ -2191,14 +2356,20 @@
         if (!file.exists) throw new Error("Missing required asset: " + fileName);
         inspectCompetitorTransparencyBeforePlacement(file, role, warnings || []);
         var group = groupForAssetRole(groups, role), layer = placeFileAsSmartObject(document, file, group, MATCH_ASSET_LAYER_NAMES[role]);
-        var targetBounds = applyLayerPlacement(document, layer, role, placement || null, "contain", layoutPreset);
-        if (placement && own(placement, "clippingMask")) {
+        var isEccwCoreAsset = layoutPreset === ECCW_PANEL_LAYOUT_PRESET && valueInList(role, ["competitorLeft", "competitorRight", "showLogo"]);
+        var targetBounds = isEccwCoreAsset ?
+            applyEccwVisibleContentPlacement(document, layer, role) :
+            applyLayerPlacement(document, layer, role, placement || null, "contain", layoutPreset);
+        if (isEccwCoreAsset && (role === "competitorLeft" || role === "competitorRight")) {
+            applyMandatoryEccwCutoffMask(document, layer, role, targetBounds);
+        }
+        if (!isEccwCoreAsset && placement && own(placement, "clippingMask")) {
             try {
                 var createdBase = applyClippingPreference(document, layer, group, role, targetBounds, placement.clippingMask, null);
                 if (createdBase && semanticReferences) semanticReferences[role + "ClippingBase"] = createdBase;
             } catch (error) { throw new Error("Could not apply clipping mask for " + role + ": " + error.message); }
         }
-        if (placement && own(placement, "nonGenerativeMask")) applyNonGenerativeMaskPreference(document, layer, targetBounds, placement.nonGenerativeMask, role, false, false);
+        if (!isEccwCoreAsset && placement && own(placement, "nonGenerativeMask")) applyNonGenerativeMaskPreference(document, layer, targetBounds, placement.nonGenerativeMask, role, false, false);
         setLayerEffectsForPlacement(document, layer, placement || null, accentColor);
         return layer;
     }
@@ -2206,12 +2377,19 @@
         var result = [], seen = {};
         try {
             for (var i = 0; i < app.fonts.length; i++) {
-                var postScriptName = "", displayName = "";
+                var postScriptName = "", displayName = "", family = "", style = "";
                 try { postScriptName = String(app.fonts[i].postScriptName); } catch (_postScriptNameError) {}
                 try { displayName = String(app.fonts[i].name); } catch (_fontDisplayNameError) {}
+                try { family = String(app.fonts[i].family); } catch (_fontFamilyError) {}
+                try { style = String(app.fonts[i].style); } catch (_fontStyleError) {}
                 if (postScriptName && !seen[postScriptName.toLowerCase()]) {
                     seen[postScriptName.toLowerCase()] = true;
-                    result.push({ postScriptName: postScriptName, displayName: displayName });
+                    result.push({
+                        postScriptName: postScriptName,
+                        displayName: displayName,
+                        family: family,
+                        style: style
+                    });
                 }
             }
         } catch (_fontEnumerationError) {}
@@ -2229,6 +2407,49 @@
         for (var c = 0; c < candidates.length; c++) for (i = 0; i < fonts.length; i++) if (fonts[i].postScriptName.toLowerCase() === candidates[c].toLowerCase()) return fonts[i].postScriptName;
         return fonts.length ? fonts[0].postScriptName : null;
     }
+    function resolveApprovedEccwFont(fonts) {
+        var best = null, bestScore = -1;
+        for (var i = 0; i < fonts.length; i++) {
+            var font = fonts[i];
+            var identity = (
+                String(font.family || "") + " " +
+                String(font.style || "") + " " +
+                String(font.displayName || "") + " " +
+                String(font.postScriptName || "")
+            ).toLowerCase();
+            var score = -1;
+            var isBold = identity.indexOf("bold") !== -1;
+            var isCondensed = identity.indexOf("condensed") !== -1 || identity.indexOf("narrow") !== -1;
+            if (identity.indexOf("bahnschrift") !== -1 && isBold && isCondensed) {
+                score = identity.indexOf("semicondensed") !== -1 || identity.indexOf("semi condensed") !== -1 ? 475 : 500;
+            }
+            else if (identity.indexOf("arial narrow") !== -1 && isBold) score = 300;
+            else if (identity.indexOf("impact") !== -1) score = 200;
+            if (score > bestScore) {
+                best = font;
+                bestScore = score;
+            }
+        }
+        if (!best) {
+            throw new Error(
+                "The ECCW panel preset requires an installed approved display font: " +
+                "Bahnschrift condensed bold, Arial Narrow Bold, or Impact."
+            );
+        }
+        return best;
+    }
+    function recordApprovedEccwFont(style, resolvedFont, warnings) {
+        style.fonts = {
+            mainTitle: resolvedFont.postScriptName,
+            competitorNames: resolvedFont.postScriptName,
+            date: resolvedFont.postScriptName
+        };
+        warnings.push(
+            'ECCW design font selected: family="' + String(resolvedFont.family || "") +
+            '", style="' + String(resolvedFont.style || "") +
+            '", PostScript="' + String(resolvedFont.postScriptName) + '".'
+        );
+    }
     function fontRoleForText(role) {
         if (role === "matchTitle") return "mainTitle";
         if (role === "championship") return "championshipLabel";
@@ -2237,10 +2458,10 @@
     }
     function textPositionAndSize(role, width, height, layoutPreset) {
         if (layoutPreset === ECCW_PANEL_LAYOUT_PRESET) {
-            if (role === "competitorLeftName") return { x: 515, y: 938, size: 52, maxWidth: 680, maxHeight: 72, center: true };
-            if (role === "competitorRightName") return { x: 1405, y: 938, size: 52, maxWidth: 680, maxHeight: 72, center: true };
-            if (role === "matchTitle") return { x: 960, y: 595, size: 72, maxWidth: 110, maxHeight: 75, center: true };
-            if (role === "date") return { x: 960, y: 183, size: 34, maxWidth: 300, maxHeight: 46, center: true };
+            if (role === "competitorLeftName") return { x: 515, y: 925, size: 68, maxWidth: 610, maxHeight: 82, center: true };
+            if (role === "competitorRightName") return { x: 1405, y: 925, size: 68, maxWidth: 610, maxHeight: 82, center: true };
+            if (role === "matchTitle") return { x: 960, y: 600, size: 78, maxWidth: 110, maxHeight: 85, center: true };
+            if (role === "date") return { x: 960, y: 190, size: 58, maxWidth: 390, maxHeight: 72, center: true };
         }
         if (layoutPreset === "single-competitor-title-side" && (role === "championship" || role === "matchTitle" || role === "stipulation")) {
             if (role === "championship") return { x: width * 0.72, y: height * 0.36, size: height * 0.028, center: true };
@@ -2269,12 +2490,20 @@
     }
     function constrainLiveTextToGeometry(document, layer, role, geometry) {
         if (!own(geometry, "maxWidth") || !own(geometry, "maxHeight")) return;
-        var bounds = safeTransformBounds(layer);
-        if (!bounds) throw new Error("Could not read live text bounds for " + role + ".");
-        var measured = rect(bounds);
-        if (measured.width <= 0 || measured.height <= 0) throw new Error("Live text has empty bounds for " + role + ".");
-        var ratio = Math.min(1, Number(geometry.maxWidth) / measured.width, Number(geometry.maxHeight) / measured.height);
-        if (ratio < 1) layer.resize(ratio * 100, ratio * 100, AnchorPosition.MIDDLECENTER);
+        var bounds = null, measured = null;
+        for (var attempt = 0; attempt < 6; attempt++) {
+            bounds = safeTransformBounds(layer);
+            if (!bounds) throw new Error("Could not read live text bounds for " + role + ".");
+            measured = rect(bounds);
+            if (measured.width <= 0 || measured.height <= 0) throw new Error("Live text has empty bounds for " + role + ".");
+            var ratio = Math.min(1, Number(geometry.maxWidth) / measured.width, Number(geometry.maxHeight) / measured.height);
+            if (ratio >= 0.999) break;
+            var currentPointSize;
+            try { currentPointSize = Number(layer.textItem.size.as("pt")); }
+            catch (_eccwTextPointSizeError) { currentPointSize = Number(layer.textItem.size); }
+            if (!isFinite(currentPointSize) || currentPointSize <= 0) throw new Error("Could not reduce the live font size for " + role + ".");
+            layer.textItem.size = UnitValue(Math.max(8, currentPointSize * ratio * 0.99), "pt");
+        }
         bounds = safeTransformBounds(layer);
         if (!bounds) throw new Error("Could not read constrained live text bounds for " + role + ".");
         layer.translate(
@@ -2288,7 +2517,51 @@
         app.activeDocument = document;
         document.activeLayer = layer;
     }
-    function createEditableMatchText(document, group, role, contents, style, fontList, warnings) {
+    function setEccwTextEffects(document, layer, role) {
+        app.activeDocument = document;
+        document.activeLayer = layer;
+        var effects = readPreservableLayerEffects();
+        var shadow = new ActionDescriptor(), black = new ActionDescriptor();
+        shadow.putBoolean(charIDToTypeID("enab"), true);
+        shadow.putEnumerated(charIDToTypeID("Md  "), charIDToTypeID("BlnM"), charIDToTypeID("Mltp"));
+        shadow.putUnitDouble(charIDToTypeID("Opct"), charIDToTypeID("#Prc"), role === "date" ? 42 : 35);
+        shadow.putUnitDouble(charIDToTypeID("Dstn"), charIDToTypeID("#Pxl"), 4);
+        shadow.putUnitDouble(charIDToTypeID("blur"), charIDToTypeID("#Pxl"), role === "date" ? 8 : 6);
+        black.putDouble(charIDToTypeID("Rd  "), 0);
+        black.putDouble(charIDToTypeID("Grn "), 0);
+        black.putDouble(charIDToTypeID("Bl  "), 0);
+        shadow.putObject(charIDToTypeID("Clr "), charIDToTypeID("RGBC"), black);
+        effects.putObject(stringIDToTypeID("dropShadow"), stringIDToTypeID("dropShadow"), shadow);
+        if (role === "competitorLeftName" || role === "competitorRightName" || role === "matchTitle") {
+            var stroke = new ActionDescriptor(), strokeColor = new ActionDescriptor();
+            stroke.putBoolean(charIDToTypeID("enab"), true);
+            stroke.putEnumerated(charIDToTypeID("Styl"), charIDToTypeID("FStl"), charIDToTypeID("OutF"));
+            stroke.putEnumerated(charIDToTypeID("PntT"), charIDToTypeID("FrFl"), charIDToTypeID("SClr"));
+            stroke.putEnumerated(charIDToTypeID("Md  "), charIDToTypeID("BlnM"), charIDToTypeID("Nrml"));
+            stroke.putUnitDouble(charIDToTypeID("Opct"), charIDToTypeID("#Prc"), role === "matchTitle" ? 82 : 72);
+            stroke.putUnitDouble(charIDToTypeID("Sz  "), charIDToTypeID("#Pxl"), role === "matchTitle" ? 2 : 3);
+            if (role === "matchTitle") {
+                strokeColor.putDouble(charIDToTypeID("Rd  "), 238);
+                strokeColor.putDouble(charIDToTypeID("Grn "), 238);
+                strokeColor.putDouble(charIDToTypeID("Bl  "), 238);
+            } else {
+                strokeColor.putDouble(charIDToTypeID("Rd  "), 198);
+                strokeColor.putDouble(charIDToTypeID("Grn "), 24);
+                strokeColor.putDouble(charIDToTypeID("Bl  "), 32);
+            }
+            stroke.putObject(charIDToTypeID("Clr "), charIDToTypeID("RGBC"), strokeColor);
+            effects.putObject(charIDToTypeID("FrFX"), charIDToTypeID("FrFX"), stroke);
+        }
+        var effectsScale = stringIDToTypeID("scale");
+        if (!effects.hasKey(effectsScale)) effects.putUnitDouble(effectsScale, charIDToTypeID("#Prc"), 100);
+        var setDescriptor = new ActionDescriptor(), setReference = new ActionReference();
+        setReference.putProperty(charIDToTypeID("Prpr"), stringIDToTypeID("layerEffects"));
+        setReference.putEnumerated(charIDToTypeID("Lyr "), charIDToTypeID("Ordn"), charIDToTypeID("Trgt"));
+        setDescriptor.putReference(charIDToTypeID("null"), setReference);
+        setDescriptor.putObject(charIDToTypeID("T   "), stringIDToTypeID("layerEffects"), effects);
+        executeAction(charIDToTypeID("setd"), setDescriptor, DialogModes.NO);
+    }
+    function createEditableMatchText(document, group, role, contents, style, fontList, warnings, approvedEccwFont) {
         app.activeDocument = document;
         var layer = document.artLayers.add();
         layer.kind = LayerKind.TEXT;
@@ -2299,17 +2572,51 @@
         textItem.size = UnitValue(Math.max(8, geometry.size * 72 / Number(document.resolution)), "pt");
         if (geometry.center) textItem.justification = Justification.CENTER;
         var fontRole = fontRoleForText(role), requested = style.fonts && own(style.fonts, fontRole) ? style.fonts[fontRole] : null;
-        var font = resolveMatchFont(requested, fontRole, fontList, warnings);
+        var font = approvedEccwFont ? approvedEccwFont.postScriptName : resolveMatchFont(requested, fontRole, fontList, warnings);
         if (font) {
-            try { textItem.font = font; } catch (fontError) { warnings.push("Photoshop could not apply font " + font + " to " + role + ": " + fontError.message); }
+            try { textItem.font = font; }
+            catch (fontError) {
+                if (approvedEccwFont) throw new Error("Photoshop could not apply the approved ECCW font to " + role + ": " + fontError.message);
+                warnings.push("Photoshop could not apply font " + font + " to " + role + ": " + fontError.message);
+            }
         } else warnings.push("No installed Photoshop font could be selected for " + role + ".");
         var color = new SolidColor(), rgb = role === "championship" ? style.metallicColor : style.accentColor;
+        if (style.layoutPreset === ECCW_PANEL_LAYOUT_PRESET && (role === "competitorLeftName" || role === "competitorRightName" || role === "date")) {
+            rgb = { red: 255, green: 255, blue: 255 };
+        }
         color.rgb.red = rgb.red; color.rgb.green = rgb.green; color.rgb.blue = rgb.blue;
         textItem.color = color;
         layer.move(group, ElementPlacement.INSIDE);
         constrainLiveTextToGeometry(document, layer, role, geometry);
+        if (style.layoutPreset === ECCW_PANEL_LAYOUT_PRESET) setEccwTextEffects(document, layer, role);
         document.activeLayer = layer;
         return layer;
+    }
+    function applyApprovedEccwTextStyles(document, references, approvedFont) {
+        var roles = ["competitorLeftName", "competitorRightName", "matchTitle", "date"];
+        for (var i = 0; i < roles.length; i++) {
+            var role = roles[i], layer = references[role];
+            if (!layer) continue;
+            if (!isTextLayer(layer)) throw new Error("ECCW semantic role is no longer editable live text: " + role);
+            try { layer.textItem.font = approvedFont.postScriptName; }
+            catch (fontError) { throw new Error("Photoshop could not apply the approved ECCW font to " + role + ": " + fontError.message); }
+            var color = new SolidColor();
+            if (role === "matchTitle") {
+                color.rgb.red = 198; color.rgb.green = 24; color.rgb.blue = 32;
+            } else {
+                color.rgb.red = 255; color.rgb.green = 255; color.rgb.blue = 255;
+            }
+            layer.textItem.color = color;
+            var geometry = textPositionAndSize(role, ECCW_PANEL_CANVAS_WIDTH, ECCW_PANEL_CANVAS_HEIGHT, ECCW_PANEL_LAYOUT_PRESET);
+            layer.textItem.size = UnitValue(Math.max(8, geometry.size * 72 / Number(document.resolution)), "pt");
+            constrainLiveTextToGeometry(
+                document,
+                layer,
+                role,
+                geometry
+            );
+            setEccwTextEffects(document, layer, role);
+        }
     }
     function layerAndParentsVisible(layer) {
         var current = layer;
@@ -2369,6 +2676,65 @@
         }
         return bounds;
     }
+    function assertEccwCompetitorMaskAndOccupancy(document, layer, role, expectedCenterX) {
+        if (!layerHasUserMask(layer)) throw new Error(role + " is missing its mandatory y=850 user layer mask.");
+        var revealBounds;
+        try {
+            revealBounds = activeUserMaskSelectionBounds(document, layer);
+        } catch (error) {
+            throw new Error(role + " mandatory mask could not be verified: " + error.message);
+        }
+        if (
+            Math.abs(revealBounds.left) > 1 ||
+            Math.abs(revealBounds.top) > 1 ||
+            Math.abs(revealBounds.right - ECCW_PANEL_CANVAS_WIDTH) > 1 ||
+            Math.abs(revealBounds.bottom - ECCW_COMPETITOR_CUTOFF_Y) > 1
+        ) {
+            throw new Error(role + " mandatory mask does not conceal all pixels below y=850.");
+        }
+        var unmaskedBounds = measureBoundsBehindEccwMask(document, layer, role);
+        var unmasked = rect(unmaskedBounds);
+        var visibleTop = Math.max(0, unmasked.top);
+        var visibleBottom = Math.min(ECCW_COMPETITOR_CUTOFF_Y, unmasked.bottom);
+        var visibleHeight = Math.max(0, visibleBottom - visibleTop);
+        var visibleWidth = Math.max(0, Math.min(ECCW_PANEL_CANVAS_WIDTH, unmasked.right) - Math.max(0, unmasked.left));
+        var visibleArea = visibleWidth * visibleHeight;
+        if (Math.abs(unmasked.centerX - expectedCenterX) > 2) throw new Error(role + " alpha-visible content is not centered on its approved side.");
+        if (Math.abs(visibleTop - ECCW_COMPETITOR_VISIBLE_TOP) > 2) throw new Error(role + " visible top is not aligned near y=150.");
+        if (Math.abs(((visibleTop + visibleBottom) / 2) - ECCW_COMPETITOR_VISIBLE_CENTER_Y) > 2) {
+            throw new Error(role + " masked visible-content center is not aligned near y=500.");
+        }
+        if (unmasked.height < 835 || unmasked.height > 855 || unmasked.bottom <= ECCW_COMPETITOR_CUTOFF_Y + 10) {
+            throw new Error(role + " is not scaled to 135 through 145 percent of v6 or does not extend behind the mandatory cutoff.");
+        }
+        if (visibleArea < 350000) throw new Error(role + " does not occupy substantially more visible area than v6.");
+        return {
+            bounds: unmasked,
+            visibleTop: visibleTop,
+            visibleBottom: visibleBottom,
+            visibleWidth: visibleWidth,
+            visibleHeight: visibleHeight,
+            visibleArea: visibleArea
+        };
+    }
+    function textColorChannels(layer, role) {
+        try {
+            return {
+                red: Number(layer.textItem.color.rgb.red),
+                green: Number(layer.textItem.color.rgb.green),
+                blue: Number(layer.textItem.color.rgb.blue)
+            };
+        } catch (error) {
+            throw new Error("Could not verify live text color for " + role + ": " + error.message);
+        }
+    }
+    function textPointSize(layer, role) {
+        try { return Number(layer.textItem.size.as("pt")); }
+        catch (_eccwPointSizeAsError) {
+            try { return Number(layer.textItem.size); }
+            catch (error) { throw new Error("Could not verify live point size for " + role + ": " + error.message); }
+        }
+    }
     function assertLayerCenter(layer, role, expectedX, expectedY, tolerance) {
         var bounds = safeTransformBounds(layer);
         if (!bounds) throw new Error("Could not read preview bounds for " + role + ".");
@@ -2378,7 +2744,7 @@
         }
         return geometry;
     }
-    function validateEccwPreviewLayout(document, semantic, layoutPreset, assets, text, groups) {
+    function validateEccwPreviewLayout(document, semantic, layoutPreset, assets, text, groups, approvedFont) {
         if (layoutPreset !== ECCW_PANEL_LAYOUT_PRESET) return;
         if (toPixels(document.width) !== ECCW_PANEL_CANVAS_WIDTH || toPixels(document.height) !== ECCW_PANEL_CANVAS_HEIGHT) {
             throw new Error("ECCW preview validation requires an exact 1920x1080 canvas.");
@@ -2388,6 +2754,20 @@
         }
         assertEccwCompetitorVisible(document, semantic.competitorLeft, groups, "competitorLeft");
         assertEccwCompetitorVisible(document, semantic.competitorRight, groups, "competitorRight");
+        assertEccwCompetitorMaskAndOccupancy(document, semantic.competitorLeft, "competitorLeft", 480);
+        assertEccwCompetitorMaskAndOccupancy(document, semantic.competitorRight, "competitorRight", 1440);
+        var competitorGroupIndex = topLevelLayerIndex(document, groups.competitorRenders);
+        var logoGroupIndex = topLevelLayerIndex(document, groups.showLogoGroup);
+        var matchTextGroupIndex = topLevelLayerIndex(document, groups.matchTitleGroup);
+        var eventTextGroupIndex = topLevelLayerIndex(document, groups.eventInformation);
+        if (
+            logoGroupIndex < 0 || competitorGroupIndex < 0 ||
+            logoGroupIndex >= competitorGroupIndex ||
+            logoGroupIndex <= matchTextGroupIndex ||
+            logoGroupIndex <= eventTextGroupIndex
+        ) {
+            throw new Error("ECCW layer order must be template, masked competitors, logo, then live text.");
+        }
 
         var generatedRectangleRoles = [
             "fullFrameAtmosphere", "lowerThirdPanel", "titleBacking", "showLogoPlate",
@@ -2407,19 +2787,53 @@
             throw new Error("The ECCW panel template preset must not generate overlay rectangles: " + rectangleRole + ".");
         }
 
-        var logoBounds = assertLayerCenter(semantic.showLogo, "showLogo", 960, 105, 2);
-        if (logoBounds.width > 301 || logoBounds.height > 106) throw new Error("showLogo exceeds the ECCW top-plate limit.");
-        var dateBounds = assertLayerCenter(semantic.date, "date", 960, 183, 2);
+        var logoBounds = assertLayerCenter(semantic.showLogo, "showLogo", 960, ECCW_LOGO_VISIBLE_CENTER_Y, 2);
+        if (logoBounds.width < 230 || logoBounds.width > 250) throw new Error("showLogo alpha-visible width is outside the ECCW 230 through 250 pixel target.");
+        var dateBounds = assertLayerCenter(semantic.date, "date", 960, 190, 2);
         if (dateBounds.centerY >= ECCW_PANEL_CANVAS_HEIGHT * 0.25) throw new Error("date is not in the top 25 percent of the ECCW canvas.");
-        var versusBounds = assertLayerCenter(semantic.matchTitle, "matchTitle", 960, 595, 2);
-        if (versusBounds.width > 111 || versusBounds.height > 76 || Math.abs(versusBounds.centerX - 960) > 120 || Math.abs(versusBounds.centerY - 540) > 120) {
+        var dateColor = textColorChannels(semantic.date, "date");
+        if (dateColor.red < 254 || dateColor.green < 254 || dateColor.blue < 254) throw new Error("JULY 23RD must resolve to solid white.");
+        var dateSize = textPointSize(semantic.date, "date");
+        if (dateSize < 54 || dateSize > 60) throw new Error("JULY 23RD is outside the approved 54 through 60 point range.");
+        var versusBounds = assertLayerCenter(semantic.matchTitle, "matchTitle", 960, 600, 2);
+        if (versusBounds.width > 111 || versusBounds.height > 86 || Math.abs(versusBounds.centerX - 960) > 120 || Math.abs(versusBounds.centerY - 540) > 120) {
             throw new Error("VS is not constrained near the center hexagon.");
         }
-        var leftNameBounds = assertLayerCenter(semantic.competitorLeftName, "competitorLeftName", 515, 938, 2);
-        var rightNameBounds = assertLayerCenter(semantic.competitorRightName, "competitorRightName", 1405, 938, 2);
-        if (leftNameBounds.width > 681 || rightNameBounds.width > 681) throw new Error("A competitor name exceeds its ECCW name plate.");
+        var versusSize = textPointSize(semantic.matchTitle, "matchTitle");
+        if (versusSize < 70 || versusSize > 80) throw new Error("VS is outside the approved 70 through 80 point range.");
+        var versusColor = textColorChannels(semantic.matchTitle, "matchTitle");
+        if (versusColor.red < 150 || versusColor.red <= versusColor.green || versusColor.red <= versusColor.blue) throw new Error("VS must use the approved red fill.");
+        var leftNameBounds = assertLayerCenter(semantic.competitorLeftName, "competitorLeftName", 515, 925, 2);
+        var rightNameBounds = assertLayerCenter(semantic.competitorRightName, "competitorRightName", 1405, 925, 2);
+        if (leftNameBounds.width > 611 || rightNameBounds.width > 611) throw new Error("A competitor name exceeds its ECCW name plate.");
+        if (
+            leftNameBounds.left < 170 || leftNameBounds.right > 860 ||
+            rightNameBounds.left < 1060 || rightNameBounds.right > 1750 ||
+            leftNameBounds.top < 865 || leftNameBounds.bottom > 985 ||
+            rightNameBounds.top < 865 || rightNameBounds.bottom > 985
+        ) {
+            throw new Error("A competitor name is outside its padded ECCW plate bounds.");
+        }
         if (leftNameBounds.centerY < ECCW_PANEL_CANVAS_HEIGHT * 0.75 || rightNameBounds.centerY < ECCW_PANEL_CANVAS_HEIGHT * 0.75) {
             throw new Error("Competitor names are not in the bottom 25 percent of the ECCW canvas.");
+        }
+        var leftNameColor = textColorChannels(semantic.competitorLeftName, "competitorLeftName");
+        var rightNameColor = textColorChannels(semantic.competitorRightName, "competitorRightName");
+        if (
+            leftNameColor.red < 254 || leftNameColor.green < 254 || leftNameColor.blue < 254 ||
+            rightNameColor.red < 254 || rightNameColor.green < 254 || rightNameColor.blue < 254
+        ) {
+            throw new Error("ECCW competitor names must use solid white fills.");
+        }
+        if (!approvedFont || !approvedFont.postScriptName) throw new Error("The approved installed ECCW font was not recorded for preview validation.");
+        var approvedPostScriptName = String(approvedFont.postScriptName).toLowerCase();
+        var approvedTextRoles = ["competitorLeftName", "competitorRightName", "matchTitle", "date"];
+        for (var approvedTextIndex = 0; approvedTextIndex < approvedTextRoles.length; approvedTextIndex++) {
+            var approvedTextRole = approvedTextRoles[approvedTextIndex];
+            var actualPostScriptName;
+            try { actualPostScriptName = String(semantic[approvedTextRole].textItem.font).toLowerCase(); }
+            catch (error) { throw new Error("Could not verify the installed font for " + approvedTextRole + ": " + error.message); }
+            if (actualPostScriptName !== approvedPostScriptName) throw new Error(approvedTextRole + " does not use the recorded approved installed font.");
         }
 
         var requestedAssetRoles = ownKeys(assets), requestedTextRoles = ownKeys(text);
@@ -2928,6 +3342,7 @@
             var groups = createMatchCardGroups(document, payload.style.layoutPreset), semantic = {}, groupRole;
             if (bootstrapLayer) bootstrapLayer.remove();
             for (groupRole in groups) if (own(groups, groupRole)) semantic[groupRole] = groups[groupRole];
+            if (payload.style.layoutPreset === ECCW_PANEL_LAYOUT_PRESET) ensureEccwGroupOrder(document, groups);
 
             stage = "import Bale CC";
             var importedBale = importBaleCcGroup(input, document);
@@ -2955,15 +3370,19 @@
             }
 
             stage = "create editable text";
-            var fontList = installedFonts(), textKeys = ownKeys(payload.text);
+            var fontList = installedFonts(), approvedEccwFont = null, textKeys = ownKeys(payload.text);
+            if (payload.style.layoutPreset === ECCW_PANEL_LAYOUT_PRESET) {
+                approvedEccwFont = resolveApprovedEccwFont(fontList);
+                recordApprovedEccwFont(payload.style, approvedEccwFont, warnings);
+            }
             for (var textIndex = 0; textIndex < textKeys.length; textIndex++) {
                 var textRole = textKeys[textIndex];
                 var textGroup = textRole === "date" || textRole === "time" || textRole === "venue" ? groups.eventInformation : (textRole === "championship" ? groups.championshipAndBelt : groups.matchTitleGroup);
-                semantic[textRole] = createEditableMatchText(document, textGroup, textRole, payload.text[textRole], payload.style, fontList, warnings);
+                semantic[textRole] = createEditableMatchText(document, textGroup, textRole, payload.text[textRole], payload.style, fontList, warnings, approvedEccwFont);
             }
 
             stage = "validate deterministic preview";
-            validateEccwPreviewLayout(document, semantic, payload.style.layoutPreset, payload.assets, payload.text, groups);
+            validateEccwPreviewLayout(document, semantic, payload.style.layoutPreset, payload.assets, payload.text, groups, approvedEccwFont);
 
             stage = "save layered PSD";
             if (outputPsd.exists || outputPreview.exists || outputManifest.exists) throw new Error("An output appeared while the job was running; no output was overwritten.");
@@ -3038,7 +3457,7 @@
             }
         }
         var textRoleIndex, textRole, textColor;
-        if (own(styleChanges, "accentColor")) {
+        if (own(styleChanges, "accentColor") && layoutPreset !== ECCW_PANEL_LAYOUT_PRESET) {
             textColor = new SolidColor(); textColor.rgb.red = themeColors.accentColor.red; textColor.rgb.green = themeColors.accentColor.green; textColor.rgb.blue = themeColors.accentColor.blue;
             for (textRoleIndex = 0; textRoleIndex < MATCH_TEXT_ROLES.length; textRoleIndex++) {
                 textRole = MATCH_TEXT_ROLES[textRoleIndex];
@@ -3080,6 +3499,25 @@
     }
     function applyExistingAssetPlacement(document, references, groups, role, placementChanges, previousPlacement, accentColor, layoutPreset) {
         var layer = references[role], effective = mergedPlacement(previousPlacement, placementChanges);
+        var isEccwCoreAsset = layoutPreset === ECCW_PANEL_LAYOUT_PRESET && valueInList(role, ["competitorLeft", "competitorRight", "showLogo"]);
+        if (isEccwCoreAsset) {
+            var baseRole = role + "ClippingBase";
+            if (references[baseRole] || Boolean(layer.grouped)) {
+                throw new Error("The ECCW preset refuses a clipping base or LayerSet clipping relationship for " + role + ".");
+            }
+            if (role === "competitorLeft" || role === "competitorRight") {
+                var priorMaskOwned = previousPlacement && previousPlacement.nonGenerativeMask === true;
+                var hasExistingMask = layerHasUserMask(layer);
+                if (hasExistingMask && !priorMaskOwned) throw new Error("The existing mask for " + role + " is not manifest-owned; refusing to replace it.");
+                if (hasExistingMask) deleteActiveUserMask(document, layer);
+                var unmaskedBounds = applyEccwVisibleContentPlacement(document, layer, role);
+                applyMandatoryEccwCutoffMask(document, layer, role, unmaskedBounds);
+            } else {
+                applyEccwVisibleContentPlacement(document, layer, role);
+            }
+            setLayerEffectsForPlacement(document, layer, placementChanges, accentColor);
+            return;
+        }
         var geometryFields = ["coordinateSpace", "x", "y", "fitMode", "scale", "maxWidth", "maxHeight"], geometryChanged = false;
         for (var geometryIndex = 0; geometryIndex < geometryFields.length; geometryIndex++) if (own(placementChanges, geometryFields[geometryIndex])) geometryChanged = true;
         var priorNonGenerativeMaskOwned = previousPlacement && previousPlacement.nonGenerativeMask === true;
@@ -3257,17 +3695,20 @@
         if (outputPsd.exists || outputPreview.exists || outputManifest.exists) throw new Error("One or more update output files already exist; use new versioned names.");
 
         var previous = currentDocumentOrNull(), sourceDocument = null, sourceOwned = false, workingDocument = null, previewDocument = null, attemptedOutputs = [], warnings = [];
-        if (previousManifest.layoutPreset === ECCW_PANEL_LAYOUT_PRESET && own(payload.changes, "placements")) {
-            var normalizedEccwPlacementRoles = ownKeys(payload.changes.placements);
+        var approvedEccwFont = null;
+        if (previousManifest.layoutPreset === ECCW_PANEL_LAYOUT_PRESET) {
+            if (!own(payload.changes, "placements")) payload.changes.placements = {};
+            var normalizedEccwPlacementRoles = ["competitorLeft", "competitorRight", "showLogo"];
             for (var normalizedPlacementIndex = 0; normalizedPlacementIndex < normalizedEccwPlacementRoles.length; normalizedPlacementIndex++) {
                 var normalizedPlacementRole = normalizedEccwPlacementRoles[normalizedPlacementIndex];
-                if (normalizedPlacementRole === "competitorLeft" || normalizedPlacementRole === "competitorRight" || normalizedPlacementRole === "showLogo") {
-                    payload.changes.placements[normalizedPlacementRole] = deterministicEccwPlacement(
-                        normalizedPlacementRole,
-                        payload.changes.placements[normalizedPlacementRole],
-                        warnings
-                    );
-                }
+                var requestedEccwPlacement = own(payload.changes.placements, normalizedPlacementRole) ?
+                    payload.changes.placements[normalizedPlacementRole] :
+                    (own(previousManifest.placements, normalizedPlacementRole) ? previousManifest.placements[normalizedPlacementRole] : null);
+                payload.changes.placements[normalizedPlacementRole] = deterministicEccwPlacement(
+                    normalizedPlacementRole,
+                    requestedEccwPlacement,
+                    warnings
+                );
             }
         }
         var previousDialogs = null;
@@ -3338,6 +3779,7 @@
                 var requiredGroupRole = requiredGroupRoles[requiredGroupIndex];
                 if (!groups[requiredGroupRole] || groups[requiredGroupRole].typename !== "LayerSet") throw new Error("Manifest semantic group is unavailable: " + requiredGroupRole);
             }
+            if (previousManifest.layoutPreset === ECCW_PANEL_LAYOUT_PRESET) ensureEccwGroupOrder(workingDocument, groups);
             var currentStyle = {
                 primaryColor: cloneJsonValue(previousManifest.themeColors.primaryColor),
                 secondaryColor: cloneJsonValue(previousManifest.themeColors.secondaryColor),
@@ -3352,6 +3794,12 @@
                     if (changedStyleKeys[i] === "fonts") mergeOwn(currentStyle.fonts, payload.changes.style.fonts);
                     else currentStyle[changedStyleKeys[i]] = cloneJsonValue(payload.changes.style[changedStyleKeys[i]]);
                 }
+            }
+            if (previousManifest.layoutPreset === ECCW_PANEL_LAYOUT_PRESET) {
+                approvedEccwFont = resolveApprovedEccwFont(installedFonts());
+                recordApprovedEccwFont(currentStyle, approvedEccwFont, warnings);
+                if (!own(payload.changes, "style")) payload.changes.style = {};
+                payload.changes.style.fonts = cloneJsonValue(currentStyle.fonts);
             }
 
             if (own(payload.changes, "templateBackground")) {
@@ -3418,7 +3866,7 @@
                         }
                     } else {
                         var targetTextGroup = role === "date" || role === "time" || role === "venue" ? groups.eventInformation : (role === "championship" ? groups.championshipAndBelt : groups.matchTitleGroup);
-                        references[role] = createEditableMatchText(workingDocument, targetTextGroup, role, payload.changes.text[role], currentStyle, availableFonts, warnings);
+                        references[role] = createEditableMatchText(workingDocument, targetTextGroup, role, payload.changes.text[role], currentStyle, availableFonts, warnings, approvedEccwFont);
                     }
                 }
             }
@@ -3434,18 +3882,7 @@
                 if (own(payload.changes.style, "fonts")) applyRequestedFonts(workingDocument, references, currentStyle.fonts, payload.changes.style.fonts, warnings);
             }
             if (previousManifest.layoutPreset === ECCW_PANEL_LAYOUT_PRESET) {
-                var eccwTextRoles = ["competitorLeftName", "competitorRightName", "matchTitle", "date"];
-                for (var eccwTextIndex = 0; eccwTextIndex < eccwTextRoles.length; eccwTextIndex++) {
-                    var eccwTextRole = eccwTextRoles[eccwTextIndex];
-                    if (references[eccwTextRole]) {
-                        constrainLiveTextToGeometry(
-                            workingDocument,
-                            references[eccwTextRole],
-                            eccwTextRole,
-                            textPositionAndSize(eccwTextRole, ECCW_PANEL_CANVAS_WIDTH, ECCW_PANEL_CANVAS_HEIGHT, ECCW_PANEL_LAYOUT_PRESET)
-                        );
-                    }
-                }
+                applyApprovedEccwTextStyles(workingDocument, references, approvedEccwFont);
             }
             stage = "update visibility";
             if (own(payload.changes, "visibility")) applyVisibilityChanges(references, payload.changes.visibility);
@@ -3454,7 +3891,7 @@
             var effectivePreviewAssets = cloneJsonValue(previousManifest.assets), effectivePreviewText = cloneJsonValue(previousManifest.text);
             if (own(payload.changes, "assets")) mergeOwn(effectivePreviewAssets, payload.changes.assets);
             if (own(payload.changes, "text")) mergeOwn(effectivePreviewText, payload.changes.text);
-            validateEccwPreviewLayout(workingDocument, references, previousManifest.layoutPreset, effectivePreviewAssets, effectivePreviewText, groups);
+            validateEccwPreviewLayout(workingDocument, references, previousManifest.layoutPreset, effectivePreviewAssets, effectivePreviewText, groups, approvedEccwFont);
 
             stage = "save versioned layered PSD";
             if (outputPsd.exists || outputPreview.exists || outputManifest.exists) throw new Error("An update output appeared while the job was running; no output was overwritten.");

@@ -901,24 +901,24 @@ test("ECCW worker preset preserves the template and validates deterministic plac
   assert.ok(earlyReturn < firstRectangle);
   assert.match(
     workerSource,
-    /if \(role === "competitorLeft"\) return \{ left: 130, top: 240, right: 870, bottom: 845 \};/
+    /var ECCW_COMPETITOR_SOURCE_HEIGHT = 847;/
   );
   assert.match(
     workerSource,
-    /if \(role === "competitorRight"\) return \{ left: 1050, top: 240, right: 1790, bottom: 845 \};/
+    /var ECCW_COMPETITOR_CUTOFF_Y = 850;/
   );
   assert.match(
     workerSource,
-    /if \(role === "showLogo"\) return \{ left: 810, top: 52\.5, right: 1110, bottom: 157\.5 \};/
+    /var ECCW_LOGO_VISIBLE_WIDTH = 240;/
   );
-  assert.match(workerSource, /x: 515, y: 938, size: 52, maxWidth: 680/);
-  assert.match(workerSource, /x: 1405, y: 938, size: 52, maxWidth: 680/);
-  assert.match(workerSource, /x: 960, y: 595, size: 72, maxWidth: 110, maxHeight: 75/);
-  assert.match(workerSource, /x: 960, y: 183, size: 34, maxWidth: 300/);
+  assert.match(workerSource, /x: 515, y: 925, size: 68, maxWidth: 610/);
+  assert.match(workerSource, /x: 1405, y: 925, size: 68, maxWidth: 610/);
+  assert.match(workerSource, /x: 960, y: 600, size: 78, maxWidth: 110, maxHeight: 85/);
+  assert.match(workerSource, /x: 960, y: 190, size: 58, maxWidth: 390/);
   assert.match(workerSource, /function createMatchCardGroups\(document, layoutPreset\)/);
   assert.match(
     workerSource,
-    /"templateBackground", "competitorRenders", "matchTitleGroup",\s+"eventInformation", "showLogoGroup"/
+    /MATCH_GROUP_DEFINITIONS\[0\],\s+MATCH_GROUP_DEFINITIONS\[3\],\s+MATCH_GROUP_DEFINITIONS\[7\],\s+MATCH_GROUP_DEFINITIONS\[5\],\s+MATCH_GROUP_DEFINITIONS\[6\]/
   );
   assert.match(
     workerSource,
@@ -943,7 +943,62 @@ test("ECCW worker preset preserves the template and validates deterministic plac
   assert.match(transparencySource, /sourceDocument\.close\(SaveOptions\.DONOTSAVECHANGES\)/);
   assert.match(transparencySource, /is opaque in Photoshop and will remain opaque/);
   assert.doesNotMatch(placementSource, /clippingMask\s*:/);
-  assert.doesNotMatch(placementSource, /nonGenerativeMask\s*:/);
+  assert.match(placementSource, /placement\.nonGenerativeMask = true/);
+  assert.match(placementSource, /scale: 1\.4/);
+  assert.match(
+    workerSource,
+    /function applyEccwVisibleContentPlacement\(document, layer, role\)/
+  );
+  assert.match(
+    workerSource,
+    /var initialBounds = safeTransformBounds\(layer\)/
+  );
+  assert.match(
+    workerSource,
+    /scaleRatio = ECCW_COMPETITOR_SOURCE_HEIGHT \/ initial\.height/
+  );
+  assert.match(
+    workerSource,
+    /expectedCenterX = role === "competitorLeft" \? 480 : 1440/
+  );
+  assert.match(
+    workerSource,
+    /expectedTop = ECCW_COMPETITOR_VISIBLE_TOP/
+  );
+  assert.match(
+    workerSource,
+    /function applyMandatoryEccwCutoffMask\(document, layer, role, unmaskedBounds\)/
+  );
+  assert.match(
+    workerSource,
+    /addSelectionMask\(document, layer, \{\s+left: 0,\s+top: 0,\s+right: ECCW_PANEL_CANVAS_WIDTH,\s+bottom: ECCW_COMPETITOR_CUTOFF_Y/
+  );
+  assert.match(workerSource, /activeUserMaskSelectionBounds\(document, layer\)/);
+  assert.match(workerSource, /Photoshop did not create a real user layer mask/);
+  assert.doesNotMatch(
+    workerSource.slice(
+      workerSource.indexOf("function applyMandatoryEccwCutoffMask("),
+      workerSource.indexOf("\n    function findLayersNamed(")
+    ),
+    /createRectangleFill|applyClippingPreference/
+  );
+  assert.match(workerSource, /function resolveApprovedEccwFont\(fonts\)/);
+  assert.match(workerSource, /identity\.indexOf\("bahnschrift"\)/);
+  assert.match(workerSource, /identity\.indexOf\("arial narrow"\)/);
+  assert.match(workerSource, /identity\.indexOf\("impact"\)/);
+  assert.match(workerSource, /recordApprovedEccwFont\(payload\.style, approvedEccwFont, warnings\)/);
+  assert.match(workerSource, /ECCW design font selected: family=/);
+  assert.match(workerSource, /PostScript=/);
+  assert.match(
+    workerSource,
+    /layer\.textItem\.size = UnitValue\(Math\.max\(8, currentPointSize \* ratio \* 0\.99\), "pt"\)/
+  );
+  assert.match(workerSource, /rgb = \{ red: 255, green: 255, blue: 255 \}/);
+  assert.match(workerSource, /effects\.putObject\(charIDToTypeID\("FrFX"\)/);
+  assert.match(workerSource, /assertEccwCompetitorMaskAndOccupancy/);
+  assert.match(workerSource, /visibleArea < 350000/);
+  assert.match(workerSource, /JULY 23RD must resolve to solid white/);
+  assert.match(workerSource, /showLogo alpha-visible width is outside the ECCW 230 through 250 pixel target/);
   assert.match(workerSource, /assertEccwCompetitorVisible\(document, semantic\[assetRole\]/);
   assert.match(workerSource, /role \+ " is not above the template background\."/);
   assert.match(workerSource, /role \+ " is not below the live text and finishing groups\."/);
