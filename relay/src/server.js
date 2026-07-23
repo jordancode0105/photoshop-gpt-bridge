@@ -727,6 +727,148 @@ const visibilityChangesSchema = z
     });
   });
 
+const eccwOffsetSchema = z.number().min(-300).max(300);
+const eccwTextOffsetSchema = z.number().min(-150).max(150);
+const eccwShadowSchema = z
+  .object({
+    enabled: z.boolean().optional(),
+    opacity: z.number().min(0).max(60).optional(),
+    distance: z.number().min(0).max(40).optional(),
+    blur: z.number().min(0).max(40).optional(),
+  })
+  .strict();
+const eccwStrokeSchema = z
+  .object({
+    enabled: z.boolean().optional(),
+    color: rgbSchema.optional(),
+    size: z.number().min(0).max(8).optional(),
+    opacity: z.number().min(0).max(100).optional(),
+  })
+  .strict();
+const eccwCompetitorDirectionSchema = z
+  .object({
+    scale: z.number().min(0.75).max(2.25).optional(),
+    xOffset: eccwOffsetSchema.optional(),
+    yOffset: z.number().min(-250).max(250).optional(),
+    cutoffY: z.number().min(700).max(950).optional(),
+    headTargetY: z.number().min(100).max(500).optional(),
+    shadowOpacity: z.number().min(0).max(60).optional(),
+    shadowDistance: z.number().min(0).max(40).optional(),
+    brightness: z.number().int().min(-100).max(100).optional(),
+    contrast: z.number().int().min(-100).max(100).optional(),
+  })
+  .strict();
+const eccwNameplateDirectionSchema = z
+  .object({
+    targetWidthOccupancy: z.number().min(0.5).max(0.95).optional(),
+    targetHeightOccupancy: z.number().min(0.3).max(0.9).optional(),
+    minimumHorizontalPadding: z.number().min(20).max(120).optional(),
+    maximumFontSize: z.number().min(36).max(120).optional(),
+    minimumFontSize: z.number().min(18).max(96).optional(),
+    tracking: z.number().min(-100).max(300).optional(),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if (
+      value.maximumFontSize !== undefined &&
+      value.minimumFontSize !== undefined &&
+      value.minimumFontSize > value.maximumFontSize
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["minimumFontSize"],
+        message: "minimumFontSize must not exceed maximumFontSize",
+      });
+    }
+  });
+const eccwLogoDirectionSchema = z
+  .object({
+    visibleWidth: z.number().min(160).max(360).optional(),
+    xOffset: eccwTextOffsetSchema.optional(),
+    yOffset: eccwTextOffsetSchema.optional(),
+  })
+  .strict();
+const eccwTopTextDirectionShape = {
+  fontSize: z.number().min(18).max(100).optional(),
+  xOffset: eccwTextOffsetSchema.optional(),
+  yOffset: eccwTextOffsetSchema.optional(),
+  fill: rgbSchema.optional(),
+  stroke: eccwStrokeSchema.optional(),
+  shadow: eccwShadowSchema.optional(),
+};
+const eccwDateDirectionSchema = z.object(eccwTopTextDirectionShape).strict();
+const eccwStipulationDirectionSchema = z
+  .object({
+    text: matchCardTextValueSchema.min(1).max(160).optional(),
+    ...eccwTopTextDirectionShape,
+  })
+  .strict();
+const eccwTopPlateDirectionSchema = z
+  .object({
+    logo: eccwLogoDirectionSchema.optional(),
+    date: eccwDateDirectionSchema.optional(),
+    stipulation: eccwStipulationDirectionSchema.optional(),
+  })
+  .strict();
+const eccwVsDirectionSchema = z
+  .object({
+    fontSize: z.number().min(40).max(100).optional(),
+    xOffset: eccwTextOffsetSchema.optional(),
+    yOffset: eccwTextOffsetSchema.optional(),
+  })
+  .strict();
+const eccwArtDirectionSchema = z
+  .object({
+    competitorLeft: eccwCompetitorDirectionSchema.optional(),
+    competitorRight: eccwCompetitorDirectionSchema.optional(),
+    nameplates: eccwNameplateDirectionSchema.optional(),
+    topPlate: eccwTopPlateDirectionSchema.optional(),
+    vs: eccwVsDirectionSchema.optional(),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    const logo = value.topPlate?.logo || {};
+    const date = value.topPlate?.date || {};
+    const stipulation = value.topPlate?.stipulation || {};
+    const logoWidth = logo.visibleWidth ?? 260;
+    const logoCenterY = 92 + (logo.yOffset ?? 0);
+    const logoHeight = logoWidth * (1024 / 1500);
+    const dateSize = date.fontSize ?? 66;
+    const dateCenterY = 208 + (date.yOffset ?? 0);
+    const stipulationEnabled = typeof stipulation.text === "string";
+    const stipulationSize = stipulation.fontSize ?? 30;
+    const stipulationCenterY = 250 + (stipulation.yOffset ?? 0);
+    const estimated = [
+      { path: ["topPlate", "logo"], top: logoCenterY - logoHeight / 2, bottom: logoCenterY + logoHeight / 2 },
+      { path: ["topPlate", "date"], top: dateCenterY - dateSize * 0.325, bottom: dateCenterY + dateSize * 0.325 },
+    ];
+    if (stipulationEnabled) {
+      estimated.push({
+        path: ["topPlate", "stipulation"],
+        top: stipulationCenterY - stipulationSize * 0.325,
+        bottom: stipulationCenterY + stipulationSize * 0.325,
+      });
+    }
+    for (const item of estimated) {
+      if (item.top < 0 || item.bottom > 270) {
+        context.addIssue({
+          code: "custom",
+          path: item.path,
+          message: "Configured top-plate element is estimated to extend outside the ECCW plate",
+        });
+      }
+    }
+    for (let index = 1; index < estimated.length; index += 1) {
+      if (estimated[index].top < estimated[index - 1].bottom + 2) {
+        context.addIssue({
+          code: "custom",
+          path: estimated[index].path,
+          message: "Configured top-plate elements are estimated to overlap",
+        });
+      }
+    }
+  });
+
 const createMatchCardSchema = z
   .object({
     briefName: z
@@ -740,6 +882,7 @@ const createMatchCardSchema = z
     assets: createMatchCardAssetsSchema,
     text: matchCardTextSchema,
     placements: assetPlacementsSchema.optional(),
+    artDirection: eccwArtDirectionSchema.optional(),
     outputPsdName: matchCardPsdNameSchema,
     outputPreviewName: matchCardPngNameSchema,
     outputManifestName: matchCardManifestNameSchema,
@@ -826,6 +969,12 @@ const createMatchCardSchema = z
           message: 'The ECCW panel template preset requires matchTitle to be "VS"',
         });
       }
+    } else if (value.artDirection !== undefined) {
+      context.addIssue({
+        code: "custom",
+        path: ["artDirection"],
+        message: "artDirection is supported only by the ECCW panel template preset",
+      });
     }
 
     if (value.placements) {

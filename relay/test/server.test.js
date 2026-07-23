@@ -295,6 +295,58 @@ function validEccwPanelCreate(overrides = {}) {
   });
 }
 
+function validEccwArtDirection(overrides = {}) {
+  return {
+    competitorLeft: {
+      scale: 1.55,
+      xOffset: -24,
+      yOffset: 12,
+      cutoffY: 842,
+      headTargetY: 142,
+      shadowOpacity: 38,
+      shadowDistance: 16,
+      brightness: 8,
+      contrast: 12,
+    },
+    competitorRight: {
+      scale: 1.32,
+      xOffset: 30,
+      yOffset: -8,
+      cutoffY: 858,
+      headTargetY: 155,
+      shadowOpacity: 32,
+      shadowDistance: 12,
+    },
+    nameplates: {
+      targetWidthOccupancy: 0.86,
+      targetHeightOccupancy: 0.64,
+      minimumHorizontalPadding: 30,
+      maximumFontSize: 92,
+      minimumFontSize: 42,
+      tracking: 10,
+    },
+    topPlate: {
+      logo: { visibleWidth: 260, xOffset: 0, yOffset: 0 },
+      date: {
+        fontSize: 66,
+        xOffset: 0,
+        yOffset: 0,
+        fill: { red: 255, green: 255, blue: 255 },
+        shadow: { enabled: true, opacity: 40, distance: 4, blur: 8 },
+      },
+      stipulation: {
+        text: "FIRST TO THREE RULES",
+        fontSize: 30,
+        xOffset: 0,
+        yOffset: 0,
+        fill: { red: 230, green: 230, blue: 230 },
+      },
+    },
+    vs: { fontSize: 78, xOffset: 0, yOffset: 6 },
+    ...overrides,
+  };
+}
+
 function validUpdateMatchCard(overrides = {}) {
   return {
     manifestFileName: "ECCW_Breakker_vs_Rage_v1.matchcard.json",
@@ -815,6 +867,93 @@ test("creates the deterministic ECCW panel-template preset", async () => {
     "competitorRight",
     "showLogo",
   ]);
+  assert.equal(claimed.body.payload.artDirection, undefined);
+});
+
+test("ECCW art direction accepts independent bounded overrides", async () => {
+  const artDirection = validEccwArtDirection();
+  const created = await request("/api/jobs/create-match-card", {
+    body: validEccwPanelCreate({ artDirection }),
+  });
+  assert.equal(created.response.status, 202);
+  let claimed = null;
+  for (let attempt = 0; attempt < 12; attempt += 1) {
+    const candidate = await pluginRequest({ capability: "powershell-v1" });
+    assert.equal(candidate.response.status, 200);
+    if (candidate.body.id === created.body.jobId) {
+      claimed = candidate;
+      break;
+    }
+  }
+  assert.ok(claimed);
+  assert.deepEqual(claimed.body.payload.artDirection, artDirection);
+  assert.notEqual(
+    claimed.body.payload.artDirection.competitorLeft.scale,
+    claimed.body.payload.artDirection.competitorRight.scale
+  );
+  assert.equal(
+    claimed.body.payload.artDirection.topPlate.stipulation.text,
+    "FIRST TO THREE RULES"
+  );
+});
+
+test("ECCW art direction validates ranges, preset scope, and top-plate spacing", async () => {
+  const invalidCases = [
+    validEccwPanelCreate({
+      artDirection: { competitorLeft: { scale: 2.26 } },
+    }),
+    validEccwPanelCreate({
+      artDirection: { competitorRight: { xOffset: 301 } },
+    }),
+    validEccwPanelCreate({
+      artDirection: { competitorLeft: { cutoffY: 699 } },
+    }),
+    validEccwPanelCreate({
+      artDirection: { competitorLeft: { brightness: 4.5 } },
+    }),
+    validEccwPanelCreate({
+      artDirection: {
+        nameplates: { minimumFontSize: 80, maximumFontSize: 60 },
+      },
+    }),
+    validEccwPanelCreate({
+      artDirection: { topPlate: { date: { yOffset: -40 } } },
+    }),
+    validEccwPanelCreate({
+      artDirection: { competitorLeft: { unexpected: true } },
+    }),
+    validCreateMatchCard({
+      artDirection: { competitorLeft: { scale: 1.2 } },
+    }),
+  ];
+  for (const body of invalidCases) {
+    const rejected = await request("/api/jobs/create-match-card", { body });
+    assert.equal(rejected.response.status, 400);
+  }
+});
+
+test("read-only ECCW planning preserves requested art direction for worker resolution", async () => {
+  const artDirection = validEccwArtDirection({
+    competitorLeft: { scale: 1.7, xOffset: -60 },
+    competitorRight: { scale: 1.15, xOffset: 75 },
+  });
+  const created = await request("/api/jobs/plan-match-card", {
+    body: validEccwPanelCreate({ artDirection }),
+  });
+  assert.equal(created.response.status, 202);
+  let claimed = null;
+  for (let attempt = 0; attempt < 12; attempt += 1) {
+    const candidate = await pluginRequest({ capability: "powershell-v1" });
+    assert.equal(candidate.response.status, 200);
+    if (candidate.body.id === created.body.jobId) {
+      claimed = candidate;
+      break;
+    }
+  }
+  assert.ok(claimed);
+  assert.equal(claimed.body.type, "planMatchCard");
+  assert.deepEqual(claimed.body.payload.artDirection, artDirection);
+  assert.equal(claimed.body.requiresConfirmation, false);
 });
 
 test("ECCW panel-template preset rejects incompatible geometry and content", async () => {
@@ -887,6 +1026,12 @@ test("ECCW worker preset preserves the template and validates deterministic plac
     plannedGroupsStart
   );
   const plannedGroupsSource = workerSource.slice(plannedGroupsStart, plannedGroupsEnd);
+  const planStart = workerSource.indexOf("function planMatchCard(");
+  const planEnd = workerSource.indexOf(
+    "\n    var MATCH_ASSET_LAYER_NAMES",
+    planStart
+  );
+  const planSource = workerSource.slice(planStart, planEnd);
 
   assert.ok(proceduralStart >= 0);
   assert.ok(proceduralEnd > proceduralStart);
@@ -896,25 +1041,19 @@ test("ECCW worker preset preserves the template and validates deterministic plac
   assert.ok(transparencyEnd > transparencyStart);
   assert.ok(plannedGroupsStart >= 0);
   assert.ok(plannedGroupsEnd > plannedGroupsStart);
+  assert.ok(planStart >= 0);
+  assert.ok(planEnd > planStart);
   assert.ok(presetGuard >= 0);
   assert.ok(presetGuard < earlyReturn);
   assert.ok(earlyReturn < firstRectangle);
-  assert.match(
-    workerSource,
-    /var ECCW_COMPETITOR_SOURCE_HEIGHT = 847;/
-  );
-  assert.match(
-    workerSource,
-    /var ECCW_COMPETITOR_CUTOFF_Y = 850;/
-  );
-  assert.match(
-    workerSource,
-    /var ECCW_LOGO_VISIBLE_WIDTH = 240;/
-  );
-  assert.match(workerSource, /x: 515, y: 925, size: 68, maxWidth: 610/);
-  assert.match(workerSource, /x: 1405, y: 925, size: 68, maxWidth: 610/);
-  assert.match(workerSource, /x: 960, y: 600, size: 78, maxWidth: 110, maxHeight: 85/);
-  assert.match(workerSource, /x: 960, y: 190, size: 58, maxWidth: 390/);
+  assert.match(workerSource, /function resolvedEccwArtDirection\(requested\)/);
+  assert.match(workerSource, /scale: 1\.4, xOffset: 0, yOffset: 0, cutoffY: 850, headTargetY: 150/);
+  assert.match(workerSource, /targetWidthOccupancy: 0\.82, targetHeightOccupancy: 0\.60/);
+  assert.match(workerSource, /minimumHorizontalPadding: 30, maximumFontSize: 84/);
+  assert.match(workerSource, /var logoDefaults = \{ visibleWidth: 260, xOffset: 0, yOffset: 0 \}/);
+  assert.match(workerSource, /fontSize: 66, xOffset: 0, yOffset: 0/);
+  assert.match(workerSource, /fontSize: 30, xOffset: 0, yOffset: 0/);
+  assert.match(workerSource, /fontSize: 78, xOffset: 0, yOffset: 6/);
   assert.match(workerSource, /function createMatchCardGroups\(document, layoutPreset\)/);
   assert.match(
     workerSource,
@@ -944,10 +1083,9 @@ test("ECCW worker preset preserves the template and validates deterministic plac
   assert.match(transparencySource, /is opaque in Photoshop and will remain opaque/);
   assert.doesNotMatch(placementSource, /clippingMask\s*:/);
   assert.match(placementSource, /placement\.nonGenerativeMask = true/);
-  assert.match(placementSource, /scale: 1\.4/);
   assert.match(
     workerSource,
-    /function applyEccwVisibleContentPlacement\(document, layer, role\)/
+    /function applyEccwVisibleContentPlacement\(document, layer, role, artDirection\)/
   );
   assert.match(
     workerSource,
@@ -955,23 +1093,23 @@ test("ECCW worker preset preserves the template and validates deterministic plac
   );
   assert.match(
     workerSource,
-    /scaleRatio = ECCW_COMPETITOR_SOURCE_HEIGHT \/ initial\.height/
+    /scaleRatio = \(605 \* Number\(competitorDirection\.scale\)\) \/ initial\.height/
   );
   assert.match(
     workerSource,
-    /expectedCenterX = role === "competitorLeft" \? 480 : 1440/
+    /expectedCenterX = \(role === "competitorLeft" \? 480 : 1440\) \+ Number\(competitorDirection\.xOffset\)/
   );
   assert.match(
     workerSource,
-    /expectedTop = ECCW_COMPETITOR_VISIBLE_TOP/
+    /expectedTop = Number\(competitorDirection\.headTargetY\) \+ Number\(competitorDirection\.yOffset\)/
   );
   assert.match(
     workerSource,
-    /function applyMandatoryEccwCutoffMask\(document, layer, role, unmaskedBounds\)/
+    /function applyMandatoryEccwCutoffMask\(document, layer, role, unmaskedBounds, cutoffY\)/
   );
   assert.match(
     workerSource,
-    /addSelectionMask\(document, layer, \{\s+left: 0,\s+top: 0,\s+right: ECCW_PANEL_CANVAS_WIDTH,\s+bottom: ECCW_COMPETITOR_CUTOFF_Y/
+    /addSelectionMask\(document, layer, \{\s+left: 0,\s+top: 0,\s+right: ECCW_PANEL_CANVAS_WIDTH,\s+bottom: cutoffY/
   );
   assert.match(workerSource, /activeUserMaskSelectionBounds\(document, layer\)/);
   assert.match(workerSource, /Photoshop did not create a real user layer mask/);
@@ -983,6 +1121,7 @@ test("ECCW worker preset preserves the template and validates deterministic plac
     /createRectangleFill|applyClippingPreference/
   );
   assert.match(workerSource, /function resolveApprovedEccwFont\(fonts\)/);
+  assert.match(workerSource, /isSemiBold \? 550/);
   assert.match(workerSource, /identity\.indexOf\("bahnschrift"\)/);
   assert.match(workerSource, /identity\.indexOf\("arial narrow"\)/);
   assert.match(workerSource, /identity\.indexOf\("impact"\)/);
@@ -991,14 +1130,36 @@ test("ECCW worker preset preserves the template and validates deterministic plac
   assert.match(workerSource, /PostScript=/);
   assert.match(
     workerSource,
-    /layer\.textItem\.size = UnitValue\(Math\.max\(8, currentPointSize \* ratio \* 0\.99\), "pt"\)/
+    /layer\.textItem\.size = UnitValue\(Math\.max\(minimumPointSize, currentPointSize \* ratio \* 0\.99\), "pt"\)/
+  );
+  assert.match(workerSource, /targetWidth = Math\.min\(/);
+  assert.match(workerSource, /plateWidth \* Number\(nameplates\.targetWidthOccupancy\)/);
+  assert.match(workerSource, /textItem\.tracking = Number\(geometry\.tracking\)/);
+  assert.match(
+    workerSource,
+    /UnitValue\(Number\(geometry\.x\) - \(\(bounds\.left \+ bounds\.right\) \/ 2\), "px"\)/
+  );
+  assert.match(
+    workerSource,
+    /UnitValue\(Number\(geometry\.y\) - \(\(bounds\.top \+ bounds\.bottom\) \/ 2\), "px"\)/
   );
   assert.match(workerSource, /rgb = \{ red: 255, green: 255, blue: 255 \}/);
-  assert.match(workerSource, /effects\.putObject\(charIDToTypeID\("FrFX"\)/);
+  assert.match(workerSource, /effects\.putObject\(strokeKey, strokeKey, stroke\)/);
   assert.match(workerSource, /assertEccwCompetitorMaskAndOccupancy/);
-  assert.match(workerSource, /visibleArea < 350000/);
-  assert.match(workerSource, /JULY 23RD must resolve to solid white/);
-  assert.match(workerSource, /showLogo alpha-visible width is outside the ECCW 230 through 250 pixel target/);
+  assert.match(workerSource, /function createEccwBrightnessContrastAdjustment/);
+  assert.match(workerSource, /charIDToTypeID\("BrgC"\)/);
+  assert.match(workerSource, /adjustmentLayer\.grouped = true/);
+  assert.match(workerSource, /Configured ECCW top-plate elements overlap/);
+  assert.match(workerSource, /if \(semantic\.stipulation\)/);
+  assert.match(workerSource, /function buildEccwArtDirectionRecord/);
+  assert.match(workerSource, /finalTextBounds: textBounds/);
+  assert.match(workerSource, /competitorVisibleBounds: visibleBounds/);
+  assert.match(workerSource, /adjustments: adjustments/);
+  assert.match(workerSource, /artDirection: resolvedArtDirection \? \{/);
+  assert.match(planSource, /resolvedEccwArtDirection\(payload\.artDirection \|\| \{\}\)/);
+  assert.match(planSource, /requested: requestedArtDirection \|\| \{\}/);
+  assert.match(planSource, /resolved: resolvedArtDirection/);
+  assert.doesNotMatch(planSource, /installedFonts|safeTransformBounds|app\.activeDocument/);
   assert.match(workerSource, /assertEccwCompetitorVisible\(document, semantic\[assetRole\]/);
   assert.match(workerSource, /role \+ " is not above the template background\."/);
   assert.match(workerSource, /role \+ " is not below the live text and finishing groups\."/);

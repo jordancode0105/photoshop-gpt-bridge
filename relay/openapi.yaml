@@ -806,6 +806,231 @@ components:
       maxLength: 100
       pattern: '^[^\x00-\x1F\x7F]+$'
 
+    EccwArtDirectionShadow:
+      type: object
+      additionalProperties: false
+      properties:
+        enabled:
+          type: boolean
+        opacity:
+          type: number
+          minimum: 0
+          maximum: 60
+        distance:
+          type: number
+          minimum: 0
+          maximum: 40
+        blur:
+          type: number
+          minimum: 0
+          maximum: 40
+
+    EccwArtDirectionStroke:
+      type: object
+      additionalProperties: false
+      properties:
+        enabled:
+          type: boolean
+        color:
+          $ref: "#/components/schemas/RgbColor"
+        size:
+          type: number
+          minimum: 0
+          maximum: 8
+        opacity:
+          type: number
+          minimum: 0
+          maximum: 100
+
+    EccwCompetitorArtDirection:
+      type: object
+      additionalProperties: false
+      properties:
+        scale:
+          type: number
+          minimum: 0.75
+          maximum: 2.25
+        xOffset:
+          type: number
+          minimum: -300
+          maximum: 300
+        yOffset:
+          type: number
+          minimum: -250
+          maximum: 250
+        cutoffY:
+          type: number
+          minimum: 700
+          maximum: 950
+        headTargetY:
+          type: number
+          minimum: 100
+          maximum: 500
+        shadowOpacity:
+          type: number
+          minimum: 0
+          maximum: 60
+        shadowDistance:
+          type: number
+          minimum: 0
+          maximum: 40
+        brightness:
+          type: integer
+          minimum: -100
+          maximum: 100
+        contrast:
+          type: integer
+          minimum: -100
+          maximum: 100
+
+    EccwNameplateArtDirection:
+      type: object
+      additionalProperties: false
+      properties:
+        targetWidthOccupancy:
+          type: number
+          minimum: 0.5
+          maximum: 0.95
+          default: 0.82
+        targetHeightOccupancy:
+          type: number
+          minimum: 0.3
+          maximum: 0.9
+          default: 0.6
+        minimumHorizontalPadding:
+          type: number
+          minimum: 20
+          maximum: 120
+          default: 30
+        maximumFontSize:
+          type: number
+          minimum: 36
+          maximum: 120
+        minimumFontSize:
+          type: number
+          minimum: 18
+          maximum: 96
+        tracking:
+          type: number
+          minimum: -100
+          maximum: 300
+
+    EccwLogoArtDirection:
+      type: object
+      additionalProperties: false
+      properties:
+        visibleWidth:
+          type: number
+          minimum: 160
+          maximum: 360
+          default: 260
+        xOffset:
+          type: number
+          minimum: -150
+          maximum: 150
+        yOffset:
+          type: number
+          minimum: -150
+          maximum: 150
+
+    EccwDateArtDirection:
+      type: object
+      additionalProperties: false
+      properties:
+        fontSize:
+          type: number
+          minimum: 18
+          maximum: 100
+          default: 66
+        xOffset:
+          type: number
+          minimum: -150
+          maximum: 150
+        yOffset:
+          type: number
+          minimum: -150
+          maximum: 150
+        fill:
+          $ref: "#/components/schemas/RgbColor"
+        stroke:
+          $ref: "#/components/schemas/EccwArtDirectionStroke"
+        shadow:
+          $ref: "#/components/schemas/EccwArtDirectionShadow"
+
+    EccwStipulationArtDirection:
+      type: object
+      additionalProperties: false
+      properties:
+        text:
+          type: string
+          minLength: 1
+          maxLength: 160
+          pattern: '^[^\x00]*$'
+        fontSize:
+          type: number
+          minimum: 18
+          maximum: 100
+          default: 30
+        xOffset:
+          type: number
+          minimum: -150
+          maximum: 150
+        yOffset:
+          type: number
+          minimum: -150
+          maximum: 150
+        fill:
+          $ref: "#/components/schemas/RgbColor"
+        stroke:
+          $ref: "#/components/schemas/EccwArtDirectionStroke"
+        shadow:
+          $ref: "#/components/schemas/EccwArtDirectionShadow"
+
+    EccwTopPlateArtDirection:
+      type: object
+      additionalProperties: false
+      properties:
+        logo:
+          $ref: "#/components/schemas/EccwLogoArtDirection"
+        date:
+          $ref: "#/components/schemas/EccwDateArtDirection"
+        stipulation:
+          $ref: "#/components/schemas/EccwStipulationArtDirection"
+
+    EccwVsArtDirection:
+      type: object
+      additionalProperties: false
+      properties:
+        fontSize:
+          type: number
+          minimum: 40
+          maximum: 100
+        xOffset:
+          type: number
+          minimum: -150
+          maximum: 150
+        yOffset:
+          type: number
+          minimum: -150
+          maximum: 150
+          default: 6
+
+    EccwArtDirection:
+      type: object
+      additionalProperties: false
+      description: Optional, strictly bounded overrides for the eccw-two-competitor-panel-template preset. Offsets are relative to deterministic preset defaults.
+      properties:
+        competitorLeft:
+          $ref: "#/components/schemas/EccwCompetitorArtDirection"
+        competitorRight:
+          $ref: "#/components/schemas/EccwCompetitorArtDirection"
+        nameplates:
+          $ref: "#/components/schemas/EccwNameplateArtDirection"
+        topPlate:
+          $ref: "#/components/schemas/EccwTopPlateArtDirection"
+        vs:
+          $ref: "#/components/schemas/EccwVsArtDirection"
+
     CreateMatchCardStyle:
       type: object
       additionalProperties: false
@@ -1231,6 +1456,8 @@ components:
           $ref: "#/components/schemas/MatchCardText"
         placements:
           $ref: "#/components/schemas/AssetPlacements"
+        artDirection:
+          $ref: "#/components/schemas/EccwArtDirection"
         outputPsdName:
           $ref: "#/components/schemas/PsdOutputFileName"
         outputPreviewName:
