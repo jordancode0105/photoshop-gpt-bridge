@@ -256,6 +256,45 @@ function validCreateMatchCard(overrides = {}) {
   };
 }
 
+function validEccwPanelCreate(overrides = {}) {
+  return validCreateMatchCard({
+    briefName: "ECCW Jordan Sinner vs Eddie Slayer",
+    canvas: validCanvas(),
+    templateBackground: validTemplateBackground({
+      fileName: "ECCW_JordanSinner_vs_EddieSlayer_template_bg_v1.png",
+    }),
+    style: validStyle({
+      layoutPreset: "eccw-two-competitor-panel-template",
+    }),
+    assets: {
+      competitorLeft: "JordanSinner.png",
+      competitorRight: "EddieSlayer.png",
+      showLogo: "ECCW.png",
+    },
+    text: {
+      competitorLeftName: "JORDAN SINNER",
+      competitorRightName: "EDDIE SLAYER",
+      matchTitle: "VS",
+      date: "JULY 23RD",
+    },
+    placements: {
+      competitorLeft: {
+        coordinateSpace: "pixels",
+        x: 451,
+        y: 489,
+        fitMode: "contain",
+        maxWidth: 700,
+        maxHeight: 760,
+        clippingMask: true,
+      },
+    },
+    outputPsdName: "ECCW_JordanSinner_vs_EddieSlayer_v5.psd",
+    outputPreviewName: "ECCW_JordanSinner_vs_EddieSlayer_v5.png",
+    outputManifestName: "ECCW_JordanSinner_vs_EddieSlayer_v5.matchcard.json",
+    ...overrides,
+  });
+}
+
 function validUpdateMatchCard(overrides = {}) {
   return {
     manifestFileName: "ECCW_Breakker_vs_Rage_v1.matchcard.json",
@@ -741,6 +780,175 @@ test("creates a confirmed createMatchCard job", async () => {
   const job = await getJob(created.body.jobId);
   assert.equal(job.type, "createMatchCard");
   assert.equal(job.requiresConfirmation, true);
+});
+
+test("creates the deterministic ECCW panel-template preset", async () => {
+  const created = await request("/api/jobs/create-match-card", {
+    body: validEccwPanelCreate(),
+  });
+  assert.equal(created.response.status, 202);
+  let claimed = null;
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    const candidate = await pluginRequest({ capability: "powershell-v1" });
+    assert.equal(candidate.response.status, 200);
+    if (candidate.body.id === created.body.jobId) {
+      claimed = candidate;
+      break;
+    }
+  }
+  assert.ok(claimed);
+  assert.equal(
+    claimed.body.payload.style.layoutPreset,
+    "eccw-two-competitor-panel-template"
+  );
+  assert.deepEqual(claimed.body.payload.canvas, {
+    width: 1920,
+    height: 1080,
+    resolution: 72,
+  });
+  assert.equal(
+    claimed.body.payload.templateBackground.fileName,
+    "ECCW_JordanSinner_vs_EddieSlayer_template_bg_v1.png"
+  );
+  assert.deepEqual(Object.keys(claimed.body.payload.assets).sort(), [
+    "competitorLeft",
+    "competitorRight",
+    "showLogo",
+  ]);
+});
+
+test("ECCW panel-template preset rejects incompatible geometry and content", async () => {
+  const cases = [
+    validEccwPanelCreate({ canvas: validCanvas({ width: 1672, height: 941 }) }),
+    validEccwPanelCreate({ templateBackground: validTemplateBackground() }),
+    validEccwPanelCreate({
+      assets: {
+        competitorLeft: "JordanSinner.png",
+        competitorRight: "EddieSlayer.png",
+        showLogo: "ECCW.png",
+        beltImage: "Title.png",
+      },
+    }),
+    validEccwPanelCreate({
+      text: {
+        competitorLeftName: "JORDAN SINNER",
+        competitorRightName: "EDDIE SLAYER",
+        matchTitle: "FIGHT",
+        date: "JULY 23RD",
+      },
+    }),
+    validEccwPanelCreate({
+      text: {
+        competitorLeftName: "JORDAN SINNER",
+        competitorRightName: "EDDIE SLAYER",
+        matchTitle: "VS",
+      },
+    }),
+  ];
+  for (const body of cases) {
+    const rejected = await request("/api/jobs/create-match-card", { body });
+    assert.equal(rejected.response.status, 400);
+  }
+});
+
+test("ECCW worker preset preserves the template and validates deterministic placement", () => {
+  const workerSource = readFileSync(
+    path.resolve(process.cwd(), "..", "local-agent", "bridge-worker.jsx"),
+    "utf8"
+  );
+  const proceduralStart = workerSource.indexOf("function createProceduralMatchLayers(");
+  const proceduralEnd = workerSource.indexOf(
+    "\n    function placeFileAsSmartObject(",
+    proceduralStart
+  );
+  const proceduralSource = workerSource.slice(proceduralStart, proceduralEnd);
+  const presetGuard = proceduralSource.indexOf(
+    "style.layoutPreset === ECCW_PANEL_LAYOUT_PRESET"
+  );
+  const earlyReturn = proceduralSource.indexOf("return;", presetGuard);
+  const firstRectangle = proceduralSource.indexOf("createRectangleFill(");
+  const placementStart = workerSource.indexOf("function deterministicEccwPlacement(");
+  const placementEnd = workerSource.indexOf(
+    "\n    function applyDeterministicEccwPlacements(",
+    placementStart
+  );
+  const placementSource = workerSource.slice(placementStart, placementEnd);
+  const transparencyStart = workerSource.indexOf(
+    "function inspectCompetitorTransparencyBeforePlacement("
+  );
+  const transparencyEnd = workerSource.indexOf(
+    "\n    function deterministicEccwPlacement(",
+    transparencyStart
+  );
+  const transparencySource = workerSource.slice(transparencyStart, transparencyEnd);
+  const plannedGroupsStart = workerSource.indexOf("function plannedMatchCardGroups(");
+  const plannedGroupsEnd = workerSource.indexOf(
+    "\n    function plannedTextMappings(",
+    plannedGroupsStart
+  );
+  const plannedGroupsSource = workerSource.slice(plannedGroupsStart, plannedGroupsEnd);
+
+  assert.ok(proceduralStart >= 0);
+  assert.ok(proceduralEnd > proceduralStart);
+  assert.ok(placementStart >= 0);
+  assert.ok(placementEnd > placementStart);
+  assert.ok(transparencyStart >= 0);
+  assert.ok(transparencyEnd > transparencyStart);
+  assert.ok(plannedGroupsStart >= 0);
+  assert.ok(plannedGroupsEnd > plannedGroupsStart);
+  assert.ok(presetGuard >= 0);
+  assert.ok(presetGuard < earlyReturn);
+  assert.ok(earlyReturn < firstRectangle);
+  assert.match(
+    workerSource,
+    /if \(role === "competitorLeft"\) return \{ left: 130, top: 240, right: 870, bottom: 845 \};/
+  );
+  assert.match(
+    workerSource,
+    /if \(role === "competitorRight"\) return \{ left: 1050, top: 240, right: 1790, bottom: 845 \};/
+  );
+  assert.match(
+    workerSource,
+    /if \(role === "showLogo"\) return \{ left: 810, top: 52\.5, right: 1110, bottom: 157\.5 \};/
+  );
+  assert.match(workerSource, /x: 515, y: 938, size: 52, maxWidth: 680/);
+  assert.match(workerSource, /x: 1405, y: 938, size: 52, maxWidth: 680/);
+  assert.match(workerSource, /x: 960, y: 595, size: 72, maxWidth: 110, maxHeight: 75/);
+  assert.match(workerSource, /x: 960, y: 183, size: 34, maxWidth: 300/);
+  assert.match(workerSource, /function createMatchCardGroups\(document, layoutPreset\)/);
+  assert.match(
+    workerSource,
+    /"templateBackground", "competitorRenders", "matchTitleGroup",\s+"eventInformation", "showLogoGroup"/
+  );
+  assert.match(
+    workerSource,
+    /createMatchCardGroups\(document, payload\.style\.layoutPreset\)/
+  );
+  const eccwPlanStart = plannedGroupsSource.indexOf(
+    "layoutPreset === ECCW_PANEL_LAYOUT_PRESET"
+  );
+  const genericPlanStart = plannedGroupsSource.indexOf(
+    '"20 - ATMOSPHERE"',
+    eccwPlanStart
+  );
+  const eccwPlanReturnEnd = plannedGroupsSource.indexOf("];", eccwPlanStart);
+  assert.ok(eccwPlanStart >= 0);
+  assert.ok(eccwPlanReturnEnd > eccwPlanStart);
+  assert.ok(genericPlanStart > eccwPlanReturnEnd);
+  assert.match(
+    workerSource,
+    /inspectCompetitorTransparencyBeforePlacement\(file, role, warnings \|\| \[\]\);/
+  );
+  assert.match(transparencySource, /Boolean\(sourceLayer\.isBackgroundLayer\)/);
+  assert.match(transparencySource, /sourceDocument\.close\(SaveOptions\.DONOTSAVECHANGES\)/);
+  assert.match(transparencySource, /is opaque in Photoshop and will remain opaque/);
+  assert.doesNotMatch(placementSource, /clippingMask\s*:/);
+  assert.doesNotMatch(placementSource, /nonGenerativeMask\s*:/);
+  assert.match(workerSource, /assertEccwCompetitorVisible\(document, semantic\[assetRole\]/);
+  assert.match(workerSource, /role \+ " is not above the template background\."/);
+  assert.match(workerSource, /role \+ " is not below the live text and finishing groups\."/);
+  assert.match(workerSource, /validateEccwPreviewLayout\(document, semantic/);
+  assert.match(workerSource, /rectangleGeometry\.width \* rectangleGeometry\.height > canvasArea \* 0\.25/);
 });
 
 test("createMatchCard accepts every protected local asset role", async () => {

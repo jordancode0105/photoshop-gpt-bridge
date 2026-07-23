@@ -1288,8 +1288,13 @@
     ];
     var MATCH_LAYOUT_PRESETS = [
         "two-competitor-title-center", "two-competitor-title-lower",
-        "three-competitor-title-center", "single-competitor-title-side"
+        "three-competitor-title-center", "single-competitor-title-side",
+        "eccw-two-competitor-panel-template"
     ];
+    var ECCW_PANEL_LAYOUT_PRESET = "eccw-two-competitor-panel-template";
+    var ECCW_PANEL_TEMPLATE_FILE_NAME = "ECCW_JordanSinner_vs_EddieSlayer_template_bg_v1.png";
+    var ECCW_PANEL_CANVAS_WIDTH = 1920;
+    var ECCW_PANEL_CANVAS_HEIGHT = 1080;
     var MATCH_VISIBILITY_ROLES = [
         "templateBackground", "atmosphere", "framesAndPanels", "competitorRenders",
         "championshipAndBelt", "matchTitleGroup", "eventInformation", "showLogoGroup",
@@ -1494,7 +1499,11 @@
         validateTemplateBackground(payload.templateBackground);
         validateCreateStyle(payload.style);
         validateAssetMap(payload.assets, "assets", true);
-        if (payload.style.layoutPreset === "two-competitor-title-center" || payload.style.layoutPreset === "two-competitor-title-lower") {
+        if (
+            payload.style.layoutPreset === "two-competitor-title-center" ||
+            payload.style.layoutPreset === "two-competitor-title-lower" ||
+            payload.style.layoutPreset === ECCW_PANEL_LAYOUT_PRESET
+        ) {
             if (!own(payload.assets, "competitorLeft") || !own(payload.assets, "competitorRight")) throw new Error("The selected two-competitor layout requires competitorLeft and competitorRight assets.");
         } else if (payload.style.layoutPreset === "three-competitor-title-center") {
             if (!own(payload.assets, "competitorLeft") || !own(payload.assets, "competitorCenter") || !own(payload.assets, "competitorRight")) throw new Error("The selected three-competitor layout requires left, center, and right competitor assets.");
@@ -1502,6 +1511,29 @@
             throw new Error("The selected single-competitor layout requires competitorCenter.");
         }
         validateTextMap(payload.text, "text");
+        if (payload.style.layoutPreset === ECCW_PANEL_LAYOUT_PRESET) {
+            if (Number(payload.canvas.width) !== ECCW_PANEL_CANVAS_WIDTH || Number(payload.canvas.height) !== ECCW_PANEL_CANVAS_HEIGHT) {
+                throw new Error("The ECCW panel template preset requires an exact 1920x1080 canvas.");
+            }
+            if (String(payload.templateBackground.fileName).toLowerCase() !== ECCW_PANEL_TEMPLATE_FILE_NAME.toLowerCase()) {
+                throw new Error("The ECCW panel template preset requires its dedicated template background filename.");
+            }
+            var eccwAssetRoles = ownKeys(payload.assets), allowedEccwAssets = ["competitorLeft", "competitorRight", "showLogo"];
+            for (var eccwAssetIndex = 0; eccwAssetIndex < eccwAssetRoles.length; eccwAssetIndex++) {
+                if (!valueInList(eccwAssetRoles[eccwAssetIndex], allowedEccwAssets)) throw new Error("The ECCW panel template preset supports only competitorLeft, competitorRight, and showLogo assets.");
+            }
+            var requiredEccwText = ["competitorLeftName", "competitorRightName", "matchTitle", "date"];
+            var eccwTextRoles = ownKeys(payload.text);
+            for (var requiredTextIndex = 0; requiredTextIndex < requiredEccwText.length; requiredTextIndex++) {
+                if (!own(payload.text, requiredEccwText[requiredTextIndex])) throw new Error("The ECCW panel template preset requires text." + requiredEccwText[requiredTextIndex] + ".");
+            }
+            for (var eccwTextIndex = 0; eccwTextIndex < eccwTextRoles.length; eccwTextIndex++) {
+                if (!valueInList(eccwTextRoles[eccwTextIndex], requiredEccwText)) throw new Error("The ECCW panel template preset supports only the two competitor names, matchTitle, and date text.");
+            }
+            if (String(payload.text.matchTitle).replace(/^\s+|\s+$/g, "").toUpperCase() !== "VS") {
+                throw new Error('The ECCW panel template preset requires text.matchTitle to be "VS".');
+            }
+        }
         if (own(payload, "placements")) {
             validatePlacements(payload.placements, "placements");
             var placementKeys = ownKeys(payload.placements);
@@ -1715,7 +1747,13 @@
             baleCc: baleStatus
         };
     }
-    function plannedMatchCardGroups() {
+    function plannedMatchCardGroups(layoutPreset) {
+        if (layoutPreset === ECCW_PANEL_LAYOUT_PRESET) {
+            return [
+                "00 - BALE CC", "10 - TEMPLATE BACKGROUND", "40 - COMPETITOR RENDERS",
+                "60 - MATCH TITLE", "70 - EVENT INFORMATION", "80 - SHOW LOGO"
+            ];
+        }
         return [
             "00 - BALE CC", "10 - TEMPLATE BACKGROUND", "20 - ATMOSPHERE",
             "30 - FRAMES AND PANELS", "40 - COMPETITOR RENDERS",
@@ -1742,7 +1780,7 @@
             missingFiles: preflight.missingFiles,
             existingOutputs: preflight.existingOutputs,
             baleCc: preflight.baleCc,
-            plannedLayerGroups: plannedMatchCardGroups(),
+            plannedLayerGroups: plannedMatchCardGroups(payload.style.layoutPreset),
             textMappings: plannedTextMappings(payload.text),
             assetMappings: payload.assets,
             templateBackground: payload.templateBackground,
@@ -1795,11 +1833,20 @@
         if (role === "venueLogo" || role === "sponsorLogo") return groups.eventInformation;
         return groups.competitorRenders;
     }
-    function createMatchCardGroups(document) {
+    function createMatchCardGroups(document, layoutPreset) {
         var groups = {};
         // Photoshop inserts new groups at the top. Creating 10 through 90
         // therefore leaves finishing overlays above the opaque background.
         for (var i = 0; i < MATCH_GROUP_DEFINITIONS.length; i++) {
+            if (
+                layoutPreset === ECCW_PANEL_LAYOUT_PRESET &&
+                !valueInList(MATCH_GROUP_DEFINITIONS[i].role, [
+                    "templateBackground", "competitorRenders", "matchTitleGroup",
+                    "eventInformation", "showLogoGroup"
+                ])
+            ) {
+                continue;
+            }
             var group = document.layerSets.add();
             group.name = MATCH_GROUP_DEFINITIONS[i].name;
             groups[MATCH_GROUP_DEFINITIONS[i].role] = group;
@@ -1850,6 +1897,12 @@
         executeAction(charIDToTypeID("setd"), setDescriptor, DialogModes.NO);
     }
     function createProceduralMatchLayers(document, groups, style, semantic) {
+        if (style.layoutPreset === ECCW_PANEL_LAYOUT_PRESET) {
+            // The dedicated ECCW PNG already contains every finished plate,
+            // divider, border, and panel. Keep the semantic groups empty so
+            // manifest/update compatibility is preserved without adding art.
+            return;
+        }
         var width = toPixels(document.width), height = toPixels(document.height);
         var titleBounds = { left: width * 0.28, top: height * 0.48, right: width * 0.72, bottom: height * 0.68 };
         if (style.layoutPreset === "two-competitor-title-lower") titleBounds = { left: width * 0.22, top: height * 0.61, right: width * 0.78, bottom: height * 0.77 };
@@ -1879,6 +1932,11 @@
     }
     function defaultAssetBounds(role, width, height, layoutPreset) {
         if (role === "templateBackground") return { left: 0, top: 0, right: width, bottom: height };
+        if (layoutPreset === ECCW_PANEL_LAYOUT_PRESET) {
+            if (role === "competitorLeft") return { left: 130, top: 240, right: 870, bottom: 845 };
+            if (role === "competitorRight") return { left: 1050, top: 240, right: 1790, bottom: 845 };
+            if (role === "showLogo") return { left: 810, top: 52.5, right: 1110, bottom: 157.5 };
+        }
         if (layoutPreset === "single-competitor-title-side" && role === "competitorCenter") return { left: width * 0.015, top: height * 0.1, right: width * 0.56, bottom: height * 0.99 };
         if (layoutPreset === "three-competitor-title-center" && role === "competitorLeft") return { left: width * 0.005, top: height * 0.16, right: width * 0.4, bottom: height * 0.99 };
         if (layoutPreset === "three-competitor-title-center" && role === "competitorCenter") return { left: width * 0.27, top: height * 0.08, right: width * 0.73, bottom: height * 0.99 };
@@ -2057,9 +2115,81 @@
         setDescriptor.putObject(charIDToTypeID("T   "), stringIDToTypeID("layerEffects"), effects);
         executeAction(charIDToTypeID("setd"), setDescriptor, DialogModes.NO);
     }
-    function placeMatchAsset(document, folder, role, fileName, groups, placement, accentColor, layoutPreset, semanticReferences) {
+    function inspectCompetitorTransparencyBeforePlacement(file, role, warnings) {
+        if (role !== "competitorLeft" && role !== "competitorRight") return;
+        if (fileExtension(file.name) !== ".png") {
+            warnings.push(role + " is not a PNG; source alpha could not be guaranteed and the asset may be opaque. No background fill was added.");
+            return;
+        }
+        var previous = currentDocumentOrNull(), sourceDocument = null, ownedDocument = false, sourceLayer = null;
+        try {
+            sourceDocument = findOpenDocumentForFile(file);
+            if (!sourceDocument) {
+                sourceDocument = app.open(file);
+                ownedDocument = true;
+            }
+            app.activeDocument = sourceDocument;
+            if (!sourceDocument.layers.length) throw new Error("the source document has no layers");
+            sourceLayer = sourceDocument.layers[0];
+            var isOpaqueBackground = false;
+            try { isOpaqueBackground = sourceDocument.layers.length === 1 && Boolean(sourceLayer.isBackgroundLayer); }
+            catch (_competitorBackgroundInspectionError) {}
+            if (isOpaqueBackground) {
+                warnings.push(
+                    role + ' source PNG "' + file.name +
+                    '" is opaque in Photoshop and will remain opaque. No black fill or background layer was added.'
+                );
+            }
+        } catch (error) {
+            throw new Error("Could not inspect source PNG transparency for " + role + ": " + safeBaleStageErrorMessage(error));
+        } finally {
+            if (ownedDocument && sourceDocument) {
+                try { sourceDocument.close(SaveOptions.DONOTSAVECHANGES); } catch (_competitorTransparencyCloseError) {}
+            }
+            restoreActiveDocument(previous);
+        }
+    }
+    function deterministicEccwPlacement(role, requestedPlacement, warnings) {
+        var geometry = null;
+        if (role === "competitorLeft") geometry = { x: 500, y: 542, maxWidth: 740, maxHeight: 605 };
+        else if (role === "competitorRight") geometry = { x: 1420, y: 542, maxWidth: 740, maxHeight: 605 };
+        else if (role === "showLogo") geometry = { x: 960, y: 105, maxWidth: 300, maxHeight: 105 };
+        if (!geometry) return requestedPlacement ? cloneJsonValue(requestedPlacement) : null;
+        var placement = {
+            coordinateSpace: "pixels",
+            x: geometry.x,
+            y: geometry.y,
+            fitMode: "contain",
+            scale: 1,
+            maxWidth: geometry.maxWidth,
+            maxHeight: geometry.maxHeight
+        };
+        if (requestedPlacement) {
+            if (requestedPlacement.clippingMask === true || requestedPlacement.nonGenerativeMask === true) {
+                warnings.push(
+                    "The ECCW panel preset skipped optional generated masking for " + role +
+                    " so transparent pixels remain intact and no backing rectangle is introduced."
+                );
+            }
+            if (own(requestedPlacement, "dropShadow")) placement.dropShadow = requestedPlacement.dropShadow;
+            if (own(requestedPlacement, "outerGlow")) placement.outerGlow = requestedPlacement.outerGlow;
+        }
+        return placement;
+    }
+    function applyDeterministicEccwPlacements(payload, warnings) {
+        if (payload.style.layoutPreset !== ECCW_PANEL_LAYOUT_PRESET) return;
+        var requested = payload.placements || {}, resolved = {};
+        var roles = ["competitorLeft", "competitorRight", "showLogo"];
+        for (var i = 0; i < roles.length; i++) {
+            var role = roles[i];
+            resolved[role] = deterministicEccwPlacement(role, own(requested, role) ? requested[role] : null, warnings);
+        }
+        payload.placements = resolved;
+    }
+    function placeMatchAsset(document, folder, role, fileName, groups, placement, accentColor, layoutPreset, semanticReferences, warnings) {
         var file = childFile(folder, fileName);
         if (!file.exists) throw new Error("Missing required asset: " + fileName);
+        inspectCompetitorTransparencyBeforePlacement(file, role, warnings || []);
         var group = groupForAssetRole(groups, role), layer = placeFileAsSmartObject(document, file, group, MATCH_ASSET_LAYER_NAMES[role]);
         var targetBounds = applyLayerPlacement(document, layer, role, placement || null, "contain", layoutPreset);
         if (placement && own(placement, "clippingMask")) {
@@ -2106,6 +2236,12 @@
         return role;
     }
     function textPositionAndSize(role, width, height, layoutPreset) {
+        if (layoutPreset === ECCW_PANEL_LAYOUT_PRESET) {
+            if (role === "competitorLeftName") return { x: 515, y: 938, size: 52, maxWidth: 680, maxHeight: 72, center: true };
+            if (role === "competitorRightName") return { x: 1405, y: 938, size: 52, maxWidth: 680, maxHeight: 72, center: true };
+            if (role === "matchTitle") return { x: 960, y: 595, size: 72, maxWidth: 110, maxHeight: 75, center: true };
+            if (role === "date") return { x: 960, y: 183, size: 34, maxWidth: 300, maxHeight: 46, center: true };
+        }
         if (layoutPreset === "single-competitor-title-side" && (role === "championship" || role === "matchTitle" || role === "stipulation")) {
             if (role === "championship") return { x: width * 0.72, y: height * 0.36, size: height * 0.028, center: true };
             if (role === "matchTitle") return { x: width * 0.72, y: height * 0.51, size: height * 0.065, center: true };
@@ -2131,6 +2267,27 @@
         if (role === "time") return { x: width * 0.5, y: height * 0.89, size: height * 0.023, center: true };
         return { x: width * 0.5, y: height * 0.95, size: height * 0.019, center: true };
     }
+    function constrainLiveTextToGeometry(document, layer, role, geometry) {
+        if (!own(geometry, "maxWidth") || !own(geometry, "maxHeight")) return;
+        var bounds = safeTransformBounds(layer);
+        if (!bounds) throw new Error("Could not read live text bounds for " + role + ".");
+        var measured = rect(bounds);
+        if (measured.width <= 0 || measured.height <= 0) throw new Error("Live text has empty bounds for " + role + ".");
+        var ratio = Math.min(1, Number(geometry.maxWidth) / measured.width, Number(geometry.maxHeight) / measured.height);
+        if (ratio < 1) layer.resize(ratio * 100, ratio * 100, AnchorPosition.MIDDLECENTER);
+        bounds = safeTransformBounds(layer);
+        if (!bounds) throw new Error("Could not read constrained live text bounds for " + role + ".");
+        layer.translate(
+            UnitValue(Number(geometry.x) - ((bounds.left + bounds.right) / 2), "px"),
+            UnitValue(Number(geometry.y) - ((bounds.top + bounds.bottom) / 2), "px")
+        );
+        bounds = safeTransformBounds(layer);
+        if (!bounds || bounds.right - bounds.left > Number(geometry.maxWidth) + 1 || bounds.bottom - bounds.top > Number(geometry.maxHeight) + 1) {
+            throw new Error("Live text could not be constrained to the ECCW panel for " + role + ".");
+        }
+        app.activeDocument = document;
+        document.activeLayer = layer;
+    }
     function createEditableMatchText(document, group, role, contents, style, fontList, warnings) {
         app.activeDocument = document;
         var layer = document.artLayers.add();
@@ -2150,8 +2307,132 @@
         color.rgb.red = rgb.red; color.rgb.green = rgb.green; color.rgb.blue = rgb.blue;
         textItem.color = color;
         layer.move(group, ElementPlacement.INSIDE);
+        constrainLiveTextToGeometry(document, layer, role, geometry);
         document.activeLayer = layer;
         return layer;
+    }
+    function layerAndParentsVisible(layer) {
+        var current = layer;
+        try {
+            while (current && current.typename !== "Document") {
+                if (!Boolean(current.visible)) return false;
+                current = current.parent;
+            }
+        } catch (_eccwVisibilityError) {
+            return false;
+        }
+        return true;
+    }
+    function topLevelLayerIndex(document, layer) {
+        var wantedId = safeLayerId(layer);
+        for (var i = 0; i < document.layers.length; i++) {
+            if (safeLayerId(document.layers[i]) === wantedId) return i;
+        }
+        return -1;
+    }
+    function visibleCanvasIntersection(document, layer) {
+        var bounds = safeTransformBounds(layer);
+        if (!bounds) return null;
+        var width = toPixels(document.width), height = toPixels(document.height);
+        var intersectionWidth = Math.max(0, Math.min(bounds.right, width) - Math.max(bounds.left, 0));
+        var intersectionHeight = Math.max(0, Math.min(bounds.bottom, height) - Math.max(bounds.top, 0));
+        return {
+            bounds: bounds,
+            width: intersectionWidth,
+            height: intersectionHeight,
+            area: intersectionWidth * intersectionHeight
+        };
+    }
+    function assertLayerInsideCanvas(document, layer, role) {
+        var intersection = visibleCanvasIntersection(document, layer);
+        if (!intersection || intersection.area <= 0) throw new Error(role + " has zero visible intersection with the canvas.");
+        var width = toPixels(document.width), height = toPixels(document.height), bounds = intersection.bounds, tolerance = 1;
+        if (bounds.left < -tolerance || bounds.top < -tolerance || bounds.right > width + tolerance || bounds.bottom > height + tolerance) {
+            throw new Error(role + " extends outside the 1920x1080 canvas.");
+        }
+        return rect(bounds);
+    }
+    function assertEccwCompetitorVisible(document, layer, groups, role) {
+        if (!layer || !isSmartObject(layer)) throw new Error(role + " is not a placed Smart Object.");
+        if (!layerAndParentsVisible(layer)) throw new Error(role + " is hidden.");
+        var bounds = assertLayerInsideCanvas(document, layer, role);
+        if (bounds.width <= 0 || bounds.height <= 0) throw new Error(role + " has empty placed bounds.");
+        var competitorIndex = topLevelLayerIndex(document, groups.competitorRenders);
+        var templateIndex = topLevelLayerIndex(document, groups.templateBackground);
+        if (competitorIndex < 0 || templateIndex < 0 || competitorIndex >= templateIndex) {
+            throw new Error(role + " is not above the template background.");
+        }
+        var aboveCompetitors = [groups.matchTitleGroup, groups.eventInformation, groups.showLogoGroup];
+        for (var i = 0; i < aboveCompetitors.length; i++) {
+            var groupIndex = topLevelLayerIndex(document, aboveCompetitors[i]);
+            if (groupIndex < 0 || groupIndex >= competitorIndex) throw new Error(role + " is not below the live text and finishing groups.");
+        }
+        return bounds;
+    }
+    function assertLayerCenter(layer, role, expectedX, expectedY, tolerance) {
+        var bounds = safeTransformBounds(layer);
+        if (!bounds) throw new Error("Could not read preview bounds for " + role + ".");
+        var geometry = rect(bounds);
+        if (Math.abs(geometry.centerX - expectedX) > tolerance || Math.abs(geometry.centerY - expectedY) > tolerance) {
+            throw new Error(role + " is not centered in its deterministic ECCW panel.");
+        }
+        return geometry;
+    }
+    function validateEccwPreviewLayout(document, semantic, layoutPreset, assets, text, groups) {
+        if (layoutPreset !== ECCW_PANEL_LAYOUT_PRESET) return;
+        if (toPixels(document.width) !== ECCW_PANEL_CANVAS_WIDTH || toPixels(document.height) !== ECCW_PANEL_CANVAS_HEIGHT) {
+            throw new Error("ECCW preview validation requires an exact 1920x1080 canvas.");
+        }
+        if (topLevelLayerIndex(document, groups.templateBackground) !== document.layers.length - 1) {
+            throw new Error("The template background group is not at the bottom of the ECCW layer stack.");
+        }
+        assertEccwCompetitorVisible(document, semantic.competitorLeft, groups, "competitorLeft");
+        assertEccwCompetitorVisible(document, semantic.competitorRight, groups, "competitorRight");
+
+        var generatedRectangleRoles = [
+            "fullFrameAtmosphere", "lowerThirdPanel", "titleBacking", "showLogoPlate",
+            "lowerLightStrip", "topBorder", "bottomBorder", "finishingGlow"
+        ];
+        var canvasArea = ECCW_PANEL_CANVAS_WIDTH * ECCW_PANEL_CANVAS_HEIGHT;
+        for (var rectangleIndex = 0; rectangleIndex < generatedRectangleRoles.length; rectangleIndex++) {
+            var rectangleRole = generatedRectangleRoles[rectangleIndex], rectangleLayer = semantic[rectangleRole];
+            if (!rectangleLayer) continue;
+            var rectangleBounds = safeTransformBounds(rectangleLayer);
+            if (rectangleBounds) {
+                var rectangleGeometry = rect(rectangleBounds);
+                if (rectangleGeometry.width * rectangleGeometry.height > canvasArea * 0.25) {
+                    throw new Error("Generated rectangle " + rectangleRole + " covers more than 25 percent of the ECCW canvas.");
+                }
+            }
+            throw new Error("The ECCW panel template preset must not generate overlay rectangles: " + rectangleRole + ".");
+        }
+
+        var logoBounds = assertLayerCenter(semantic.showLogo, "showLogo", 960, 105, 2);
+        if (logoBounds.width > 301 || logoBounds.height > 106) throw new Error("showLogo exceeds the ECCW top-plate limit.");
+        var dateBounds = assertLayerCenter(semantic.date, "date", 960, 183, 2);
+        if (dateBounds.centerY >= ECCW_PANEL_CANVAS_HEIGHT * 0.25) throw new Error("date is not in the top 25 percent of the ECCW canvas.");
+        var versusBounds = assertLayerCenter(semantic.matchTitle, "matchTitle", 960, 595, 2);
+        if (versusBounds.width > 111 || versusBounds.height > 76 || Math.abs(versusBounds.centerX - 960) > 120 || Math.abs(versusBounds.centerY - 540) > 120) {
+            throw new Error("VS is not constrained near the center hexagon.");
+        }
+        var leftNameBounds = assertLayerCenter(semantic.competitorLeftName, "competitorLeftName", 515, 938, 2);
+        var rightNameBounds = assertLayerCenter(semantic.competitorRightName, "competitorRightName", 1405, 938, 2);
+        if (leftNameBounds.width > 681 || rightNameBounds.width > 681) throw new Error("A competitor name exceeds its ECCW name plate.");
+        if (leftNameBounds.centerY < ECCW_PANEL_CANVAS_HEIGHT * 0.75 || rightNameBounds.centerY < ECCW_PANEL_CANVAS_HEIGHT * 0.75) {
+            throw new Error("Competitor names are not in the bottom 25 percent of the ECCW canvas.");
+        }
+
+        var requestedAssetRoles = ownKeys(assets), requestedTextRoles = ownKeys(text);
+        for (var assetIndex = 0; assetIndex < requestedAssetRoles.length; assetIndex++) {
+            var assetRole = requestedAssetRoles[assetIndex];
+            if (!semantic[assetRole] || !layerAndParentsVisible(semantic[assetRole])) throw new Error("Requested ECCW asset is missing or hidden: " + assetRole);
+            assertLayerInsideCanvas(document, semantic[assetRole], assetRole);
+        }
+        for (var textIndex = 0; textIndex < requestedTextRoles.length; textIndex++) {
+            var textRole = requestedTextRoles[textIndex];
+            if (!semantic[textRole] || !isTextLayer(semantic[textRole]) || !layerAndParentsVisible(semantic[textRole])) throw new Error("Requested ECCW live text is missing or hidden: " + textRole);
+            assertLayerInsideCanvas(document, semantic[textRole], textRole);
+        }
     }
     function safeBaleStageErrorMessage(error) {
         var message = error && error.message ? String(error.message) : String(error);
@@ -2550,6 +2831,27 @@
         requireString(manifest.baleCc.groupName, "manifest Bale CC groupName", 1, 255, false);
         validateAssetMap(manifest.assets, "manifest assets", false);
         validateTextMap(manifest.text, "manifest text");
+        if (manifest.layoutPreset === ECCW_PANEL_LAYOUT_PRESET) {
+            if (Number(manifest.canvas.width) !== ECCW_PANEL_CANVAS_WIDTH || Number(manifest.canvas.height) !== ECCW_PANEL_CANVAS_HEIGHT) {
+                throw new Error("The ECCW manifest canvas must remain exactly 1920x1080.");
+            }
+            if (String(manifest.templateBackground.fileName).toLowerCase() !== ECCW_PANEL_TEMPLATE_FILE_NAME.toLowerCase()) {
+                throw new Error("The ECCW manifest does not reference its dedicated template background.");
+            }
+            var eccwManifestAssets = ownKeys(manifest.assets), allowedEccwManifestAssets = ["competitorLeft", "competitorRight", "showLogo"];
+            for (var eccwManifestAssetIndex = 0; eccwManifestAssetIndex < eccwManifestAssets.length; eccwManifestAssetIndex++) {
+                if (!valueInList(eccwManifestAssets[eccwManifestAssetIndex], allowedEccwManifestAssets)) throw new Error("The ECCW manifest contains an unsupported asset role.");
+            }
+            var requiredEccwManifestText = ["competitorLeftName", "competitorRightName", "matchTitle", "date"];
+            var eccwManifestText = ownKeys(manifest.text);
+            for (var eccwRequiredTextIndex = 0; eccwRequiredTextIndex < requiredEccwManifestText.length; eccwRequiredTextIndex++) {
+                if (!own(manifest.text, requiredEccwManifestText[eccwRequiredTextIndex])) throw new Error("The ECCW manifest is missing required live text.");
+            }
+            for (var eccwManifestTextIndex = 0; eccwManifestTextIndex < eccwManifestText.length; eccwManifestTextIndex++) {
+                if (!valueInList(eccwManifestText[eccwManifestTextIndex], requiredEccwManifestText)) throw new Error("The ECCW manifest contains an unsupported text role.");
+            }
+            if (String(manifest.text.matchTitle).replace(/^\s+|\s+$/g, "").toUpperCase() !== "VS") throw new Error('The ECCW manifest matchTitle must remain "VS".');
+        }
         validateManifestPlacements(manifest.placements);
         assertAllowedKeys(requirePlainObject(manifest.semanticLayers, "manifest semanticLayers"), matchSemanticRoles(), "manifest semanticLayers");
         var semanticKeys = ownKeys(manifest.semanticLayers), seenSemanticIds = {}, seenSemanticPaths = {};
@@ -2610,10 +2912,12 @@
     function createMatchCard(input) {
         var payload = validateCreateMatchCardPayload(input.payload || {}), folder = matchWorkingFolder(input);
         configuredBaleCc(input, true);
+        var warnings = [];
+        applyDeterministicEccwPlacements(payload, warnings);
         var stage = "preflight", preflight = preflightCreateMatchCard(input, payload);
         assertCreatePreflightReady(preflight);
         var outputPsd = childFile(folder, payload.outputPsdName), outputPreview = childFile(folder, payload.outputPreviewName), outputManifest = childFile(folder, payload.outputManifestName);
-        var previous = currentDocumentOrNull(), document = null, previewDocument = null, attemptedOutputs = [], warnings = [];
+        var previous = currentDocumentOrNull(), document = null, previewDocument = null, attemptedOutputs = [];
         var previousDialogs = null;
         try { previousDialogs = app.displayDialogs; app.displayDialogs = DialogModes.NO; } catch (_createDialogReadError) {}
         try {
@@ -2621,7 +2925,7 @@
             document = app.documents.add(UnitValue(payload.canvas.width, "px"), UnitValue(payload.canvas.height, "px"), payload.canvas.resolution, payload.outputPsdName.replace(/\.psd$/i, ""), NewDocumentMode.RGB, DocumentFill.TRANSPARENT);
             app.activeDocument = document;
             var bootstrapLayer = document.layers.length === 1 && document.layers[0].typename === "ArtLayer" ? document.layers[0] : null;
-            var groups = createMatchCardGroups(document), semantic = {}, groupRole;
+            var groups = createMatchCardGroups(document, payload.style.layoutPreset), semantic = {}, groupRole;
             if (bootstrapLayer) bootstrapLayer.remove();
             for (groupRole in groups) if (own(groups, groupRole)) semantic[groupRole] = groups[groupRole];
 
@@ -2641,7 +2945,13 @@
             var assetKeys = ownKeys(payload.assets);
             for (var assetIndex = 0; assetIndex < assetKeys.length; assetIndex++) {
                 var assetRole = assetKeys[assetIndex], placement = payload.placements && own(payload.placements, assetRole) ? payload.placements[assetRole] : null;
-                semantic[assetRole] = placeMatchAsset(document, folder, assetRole, payload.assets[assetRole], groups, placement, payload.style.accentColor, payload.style.layoutPreset, semantic);
+                semantic[assetRole] = placeMatchAsset(document, folder, assetRole, payload.assets[assetRole], groups, placement, payload.style.accentColor, payload.style.layoutPreset, semantic, warnings);
+                if (
+                    payload.style.layoutPreset === ECCW_PANEL_LAYOUT_PRESET &&
+                    (assetRole === "competitorLeft" || assetRole === "competitorRight")
+                ) {
+                    assertEccwCompetitorVisible(document, semantic[assetRole], groups, assetRole);
+                }
             }
 
             stage = "create editable text";
@@ -2651,6 +2961,9 @@
                 var textGroup = textRole === "date" || textRole === "time" || textRole === "venue" ? groups.eventInformation : (textRole === "championship" ? groups.championshipAndBelt : groups.matchTitleGroup);
                 semantic[textRole] = createEditableMatchText(document, textGroup, textRole, payload.text[textRole], payload.style, fontList, warnings);
             }
+
+            stage = "validate deterministic preview";
+            validateEccwPreviewLayout(document, semantic, payload.style.layoutPreset, payload.assets, payload.text, groups);
 
             stage = "save layered PSD";
             if (outputPsd.exists || outputPreview.exists || outputManifest.exists) throw new Error("An output appeared while the job was running; no output was overwritten.");
@@ -2706,21 +3019,23 @@
         app.activeDocument = document; document.activeLayer = references[role];
         try { setActiveSolidFillColor(color); } catch (error) { throw new Error("Could not update editable fill " + role + ": " + error.message); }
     }
-    function applyThemeChanges(document, references, styleChanges, themeColors) {
+    function applyThemeChanges(document, references, styleChanges, themeColors, layoutPreset) {
         if (!styleChanges) return;
-        if (own(styleChanges, "primaryColor")) updateSolidFillSemantic(document, references, "titleBacking", themeColors.primaryColor);
-        if (own(styleChanges, "secondaryColor")) {
-            updateSolidFillSemantic(document, references, "fullFrameAtmosphere", themeColors.secondaryColor);
-            updateSolidFillSemantic(document, references, "lowerThirdPanel", themeColors.secondaryColor);
-            updateSolidFillSemantic(document, references, "showLogoPlate", themeColors.secondaryColor);
-        }
-        if (own(styleChanges, "accentColor")) {
-            updateSolidFillSemantic(document, references, "lowerLightStrip", themeColors.accentColor);
-            updateSolidFillSemantic(document, references, "finishingGlow", themeColors.accentColor);
-        }
-        if (own(styleChanges, "metallicColor")) {
-            updateSolidFillSemantic(document, references, "topBorder", themeColors.metallicColor);
-            updateSolidFillSemantic(document, references, "bottomBorder", themeColors.metallicColor);
+        if (layoutPreset !== ECCW_PANEL_LAYOUT_PRESET) {
+            if (own(styleChanges, "primaryColor")) updateSolidFillSemantic(document, references, "titleBacking", themeColors.primaryColor);
+            if (own(styleChanges, "secondaryColor")) {
+                updateSolidFillSemantic(document, references, "fullFrameAtmosphere", themeColors.secondaryColor);
+                updateSolidFillSemantic(document, references, "lowerThirdPanel", themeColors.secondaryColor);
+                updateSolidFillSemantic(document, references, "showLogoPlate", themeColors.secondaryColor);
+            }
+            if (own(styleChanges, "accentColor")) {
+                updateSolidFillSemantic(document, references, "lowerLightStrip", themeColors.accentColor);
+                updateSolidFillSemantic(document, references, "finishingGlow", themeColors.accentColor);
+            }
+            if (own(styleChanges, "metallicColor")) {
+                updateSolidFillSemantic(document, references, "topBorder", themeColors.metallicColor);
+                updateSolidFillSemantic(document, references, "bottomBorder", themeColors.metallicColor);
+            }
         }
         var textRoleIndex, textRole, textColor;
         if (own(styleChanges, "accentColor")) {
@@ -2834,6 +3149,9 @@
             throw new Error("The source document canvas or resolution no longer matches the manifest.");
         }
         var requiredGroups = ["templateBackground", "atmosphere", "framesAndPanels", "competitorRenders", "championshipAndBelt", "matchTitleGroup", "eventInformation", "showLogoGroup", "finishingEffects"];
+        if (manifest.layoutPreset === ECCW_PANEL_LAYOUT_PRESET) {
+            requiredGroups = ["templateBackground", "competitorRenders", "matchTitleGroup", "eventInformation", "showLogoGroup"];
+        }
         for (var groupIndex = 0; groupIndex < requiredGroups.length; groupIndex++) {
             var groupRole = requiredGroups[groupIndex];
             if (!sourceTargets[groupRole] || sourceTargets[groupRole].layer.typename !== "LayerSet") throw new Error("Required semantic group is missing or no longer a group: " + groupRole);
@@ -2887,6 +3205,32 @@
         if (previousManifest.outputManifestName.toLowerCase() !== payload.manifestFileName.toLowerCase()) throw new Error("The selected manifest filename does not match its recorded outputManifestName.");
         if (previousManifest.baleCc.packageFileName.toLowerCase() !== baleCc.packageFileName.toLowerCase() || previousManifest.baleCc.groupName !== baleCc.groupName) throw new Error("The manifest Bale CC identity does not match trusted local configuration.");
         if (payload.outputPsdName.toLowerCase() === previousManifest.outputPsdName.toLowerCase() || payload.outputPreviewName.toLowerCase() === previousManifest.outputPreviewName.toLowerCase()) throw new Error("Update outputs must use new versioned filenames.");
+        if (previousManifest.layoutPreset === ECCW_PANEL_LAYOUT_PRESET) {
+            if (
+                own(payload.changes, "templateBackground") &&
+                String(payload.changes.templateBackground.fileName).toLowerCase() !== ECCW_PANEL_TEMPLATE_FILE_NAME.toLowerCase()
+            ) {
+                throw new Error("The ECCW panel preset cannot replace its dedicated template background with another file.");
+            }
+            if (own(payload.changes, "assets")) {
+                var eccwUpdateAssetRoles = ownKeys(payload.changes.assets);
+                for (var eccwUpdateAssetIndex = 0; eccwUpdateAssetIndex < eccwUpdateAssetRoles.length; eccwUpdateAssetIndex++) {
+                    if (!valueInList(eccwUpdateAssetRoles[eccwUpdateAssetIndex], ["competitorLeft", "competitorRight", "showLogo"])) throw new Error("The ECCW panel preset update contains an unsupported asset role.");
+                }
+            }
+            if (own(payload.changes, "text")) {
+                var eccwUpdateTextRoles = ownKeys(payload.changes.text);
+                for (var eccwUpdateTextIndex = 0; eccwUpdateTextIndex < eccwUpdateTextRoles.length; eccwUpdateTextIndex++) {
+                    if (!valueInList(eccwUpdateTextRoles[eccwUpdateTextIndex], ["competitorLeftName", "competitorRightName", "matchTitle", "date"])) throw new Error("The ECCW panel preset update contains an unsupported text role.");
+                }
+                if (
+                    own(payload.changes.text, "matchTitle") &&
+                    String(payload.changes.text.matchTitle).replace(/^\s+|\s+$/g, "").toUpperCase() !== "VS"
+                ) {
+                    throw new Error('The ECCW panel preset matchTitle must remain "VS".');
+                }
+            }
+        }
         if (own(payload.changes, "placements")) {
             var requestedPlacementRoles = ownKeys(payload.changes.placements);
             for (var placementIndex = 0; placementIndex < requestedPlacementRoles.length; placementIndex++) {
@@ -2913,6 +3257,19 @@
         if (outputPsd.exists || outputPreview.exists || outputManifest.exists) throw new Error("One or more update output files already exist; use new versioned names.");
 
         var previous = currentDocumentOrNull(), sourceDocument = null, sourceOwned = false, workingDocument = null, previewDocument = null, attemptedOutputs = [], warnings = [];
+        if (previousManifest.layoutPreset === ECCW_PANEL_LAYOUT_PRESET && own(payload.changes, "placements")) {
+            var normalizedEccwPlacementRoles = ownKeys(payload.changes.placements);
+            for (var normalizedPlacementIndex = 0; normalizedPlacementIndex < normalizedEccwPlacementRoles.length; normalizedPlacementIndex++) {
+                var normalizedPlacementRole = normalizedEccwPlacementRoles[normalizedPlacementIndex];
+                if (normalizedPlacementRole === "competitorLeft" || normalizedPlacementRole === "competitorRight" || normalizedPlacementRole === "showLogo") {
+                    payload.changes.placements[normalizedPlacementRole] = deterministicEccwPlacement(
+                        normalizedPlacementRole,
+                        payload.changes.placements[normalizedPlacementRole],
+                        warnings
+                    );
+                }
+            }
+        }
         var previousDialogs = null;
         try { previousDialogs = app.displayDialogs; app.displayDialogs = DialogModes.NO; } catch (_updateDialogReadError) {}
         try {
@@ -2974,7 +3331,13 @@
                 showLogoGroup: references.showLogoGroup,
                 finishingEffects: references.finishingEffects
             };
-            for (var groupRole in groups) if (own(groups, groupRole) && (!groups[groupRole] || groups[groupRole].typename !== "LayerSet")) throw new Error("Manifest semantic group is unavailable: " + groupRole);
+            var requiredGroupRoles = previousManifest.layoutPreset === ECCW_PANEL_LAYOUT_PRESET ?
+                ["templateBackground", "competitorRenders", "matchTitleGroup", "eventInformation", "showLogoGroup"] :
+                ["templateBackground", "atmosphere", "framesAndPanels", "competitorRenders", "championshipAndBelt", "matchTitleGroup", "eventInformation", "showLogoGroup", "finishingEffects"];
+            for (var requiredGroupIndex = 0; requiredGroupIndex < requiredGroupRoles.length; requiredGroupIndex++) {
+                var requiredGroupRole = requiredGroupRoles[requiredGroupIndex];
+                if (!groups[requiredGroupRole] || groups[requiredGroupRole].typename !== "LayerSet") throw new Error("Manifest semantic group is unavailable: " + requiredGroupRole);
+            }
             var currentStyle = {
                 primaryColor: cloneJsonValue(previousManifest.themeColors.primaryColor),
                 secondaryColor: cloneJsonValue(previousManifest.themeColors.secondaryColor),
@@ -3004,8 +3367,15 @@
                 for (i = 0; i < changedAssetKeys.length; i++) {
                     var assetRole = changedAssetKeys[i], assetFile = childFile(folder, payload.changes.assets[assetRole]);
                     var placement = own(payload.changes, "placements") && own(payload.changes.placements, assetRole) ? payload.changes.placements[assetRole] : null;
+                    if (
+                        previousManifest.layoutPreset === ECCW_PANEL_LAYOUT_PRESET &&
+                        (assetRole === "competitorLeft" || assetRole === "competitorRight" || assetRole === "showLogo")
+                    ) {
+                        placement = deterministicEccwPlacement(assetRole, placement, warnings);
+                    }
                     if (references[assetRole]) {
                         if (!isSmartObject(references[assetRole])) throw new Error("Semantic asset role is not a Smart Object: " + assetRole);
+                        inspectCompetitorTransparencyBeforePlacement(assetFile, assetRole, warnings);
                         workingDocument.activeLayer = references[assetRole];
                         replaceSelectedSmartObject(assetFile);
                         if (placement) {
@@ -3013,7 +3383,7 @@
                             applyExistingAssetPlacement(workingDocument, references, groups, assetRole, placement, previousAssetPlacement, currentStyle.accentColor, previousManifest.layoutPreset);
                         }
                     } else {
-                        references[assetRole] = placeMatchAsset(workingDocument, folder, assetRole, payload.changes.assets[assetRole], groups, placement, currentStyle.accentColor, previousManifest.layoutPreset, references);
+                        references[assetRole] = placeMatchAsset(workingDocument, folder, assetRole, payload.changes.assets[assetRole], groups, placement, currentStyle.accentColor, previousManifest.layoutPreset, references, warnings);
                     }
                 }
             }
@@ -3038,6 +3408,14 @@
                     if (references[role]) {
                         if (!isTextLayer(references[role])) throw new Error("Semantic text role is not editable text: " + role);
                         applyContentOnlyTextEdit(references[role], payload.changes.text[role]);
+                        if (previousManifest.layoutPreset === ECCW_PANEL_LAYOUT_PRESET) {
+                            constrainLiveTextToGeometry(
+                                workingDocument,
+                                references[role],
+                                role,
+                                textPositionAndSize(role, ECCW_PANEL_CANVAS_WIDTH, ECCW_PANEL_CANVAS_HEIGHT, ECCW_PANEL_LAYOUT_PRESET)
+                            );
+                        }
                     } else {
                         var targetTextGroup = role === "date" || role === "time" || role === "venue" ? groups.eventInformation : (role === "championship" ? groups.championshipAndBelt : groups.matchTitleGroup);
                         references[role] = createEditableMatchText(workingDocument, targetTextGroup, role, payload.changes.text[role], currentStyle, availableFonts, warnings);
@@ -3047,7 +3425,7 @@
 
             stage = "update editable theme and fonts";
             if (own(payload.changes, "style")) {
-                applyThemeChanges(workingDocument, references, payload.changes.style, currentStyle);
+                applyThemeChanges(workingDocument, references, payload.changes.style, currentStyle, previousManifest.layoutPreset);
                 if (own(payload.changes.style, "accentColor")) {
                     var effectivePlacements = cloneJsonValue(previousManifest.placements || {});
                     if (own(payload.changes, "placements")) mergePlacementMap(effectivePlacements, payload.changes.placements);
@@ -3055,8 +3433,28 @@
                 }
                 if (own(payload.changes.style, "fonts")) applyRequestedFonts(workingDocument, references, currentStyle.fonts, payload.changes.style.fonts, warnings);
             }
+            if (previousManifest.layoutPreset === ECCW_PANEL_LAYOUT_PRESET) {
+                var eccwTextRoles = ["competitorLeftName", "competitorRightName", "matchTitle", "date"];
+                for (var eccwTextIndex = 0; eccwTextIndex < eccwTextRoles.length; eccwTextIndex++) {
+                    var eccwTextRole = eccwTextRoles[eccwTextIndex];
+                    if (references[eccwTextRole]) {
+                        constrainLiveTextToGeometry(
+                            workingDocument,
+                            references[eccwTextRole],
+                            eccwTextRole,
+                            textPositionAndSize(eccwTextRole, ECCW_PANEL_CANVAS_WIDTH, ECCW_PANEL_CANVAS_HEIGHT, ECCW_PANEL_LAYOUT_PRESET)
+                        );
+                    }
+                }
+            }
             stage = "update visibility";
             if (own(payload.changes, "visibility")) applyVisibilityChanges(references, payload.changes.visibility);
+
+            stage = "validate deterministic preview";
+            var effectivePreviewAssets = cloneJsonValue(previousManifest.assets), effectivePreviewText = cloneJsonValue(previousManifest.text);
+            if (own(payload.changes, "assets")) mergeOwn(effectivePreviewAssets, payload.changes.assets);
+            if (own(payload.changes, "text")) mergeOwn(effectivePreviewText, payload.changes.text);
+            validateEccwPreviewLayout(workingDocument, references, previousManifest.layoutPreset, effectivePreviewAssets, effectivePreviewText, groups);
 
             stage = "save versioned layered PSD";
             if (outputPsd.exists || outputPreview.exists || outputManifest.exists) throw new Error("An update output appeared while the job was running; no output was overwritten.");

@@ -456,7 +456,11 @@ const layoutPresetSchema = z.enum([
   "two-competitor-title-lower",
   "three-competitor-title-center",
   "single-competitor-title-side",
+  "eccw-two-competitor-panel-template",
 ]);
+const ECCW_PANEL_LAYOUT_PRESET = "eccw-two-competitor-panel-template";
+const ECCW_PANEL_TEMPLATE_FILE_NAME =
+  "ECCW_JordanSinner_vs_EddieSlayer_template_bg_v1.png";
 
 const protectedAssetRoles = [
   "competitorLeft",
@@ -745,6 +749,7 @@ const createMatchCardSchema = z
     const competitorRequirements = {
       "two-competitor-title-center": ["competitorLeft", "competitorRight"],
       "two-competitor-title-lower": ["competitorLeft", "competitorRight"],
+      [ECCW_PANEL_LAYOUT_PRESET]: ["competitorLeft", "competitorRight"],
       "three-competitor-title-center": [
         "competitorLeft",
         "competitorRight",
@@ -758,6 +763,67 @@ const createMatchCardSchema = z
           code: "custom",
           path: ["assets", role],
           message: `${role} is required for ${value.style.layoutPreset}`,
+        });
+      }
+    }
+
+    if (value.style.layoutPreset === ECCW_PANEL_LAYOUT_PRESET) {
+      if (value.canvas.width !== 1920 || value.canvas.height !== 1080) {
+        context.addIssue({
+          code: "custom",
+          path: ["canvas"],
+          message: "The ECCW panel template preset requires an exact 1920x1080 canvas",
+        });
+      }
+      if (
+        value.templateBackground.fileName.toLowerCase() !==
+        ECCW_PANEL_TEMPLATE_FILE_NAME.toLowerCase()
+      ) {
+        context.addIssue({
+          code: "custom",
+          path: ["templateBackground", "fileName"],
+          message: "The ECCW panel template preset requires its dedicated template background",
+        });
+      }
+      const allowedAssets = new Set(["competitorLeft", "competitorRight", "showLogo"]);
+      for (const role of Object.keys(value.assets)) {
+        if (!allowedAssets.has(role)) {
+          context.addIssue({
+            code: "custom",
+            path: ["assets", role],
+            message: `The ECCW panel template preset does not support ${role}`,
+          });
+        }
+      }
+      const requiredText = [
+        "competitorLeftName",
+        "competitorRightName",
+        "matchTitle",
+        "date",
+      ];
+      for (const role of requiredText) {
+        if (value.text[role] === undefined) {
+          context.addIssue({
+            code: "custom",
+            path: ["text", role],
+            message: `${role} is required for ${ECCW_PANEL_LAYOUT_PRESET}`,
+          });
+        }
+      }
+      for (const role of Object.keys(value.text)) {
+        if (!requiredText.includes(role)) {
+          context.addIssue({
+            code: "custom",
+            path: ["text", role],
+            message: `The ECCW panel template preset does not support ${role}`,
+          });
+        }
+      }
+      if (value.text.matchTitle?.trim().toUpperCase() !== "VS") {
+        context.addIssue({
+          code: "custom",
+          path: ["text", "matchTitle"],
+          message: 'The ECCW panel template preset requires matchTitle to be "VS"',
         });
       }
     }

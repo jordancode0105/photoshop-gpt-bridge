@@ -838,6 +838,7 @@ components:
             - two-competitor-title-lower
             - three-competitor-title-center
             - single-competitor-title-side
+            - eccw-two-competitor-panel-template
         fonts:
           $ref: "#/components/schemas/FontPreferences"
 
@@ -1242,7 +1243,7 @@ components:
               style:
                 properties:
                   layoutPreset:
-                    enum: [two-competitor-title-center, two-competitor-title-lower]
+                    enum: [two-competitor-title-center, two-competitor-title-lower, eccw-two-competitor-panel-template]
           then:
             properties:
               assets:
@@ -1267,6 +1268,33 @@ components:
             properties:
               assets:
                 required: [competitorCenter, showLogo]
+        - if:
+            properties:
+              style:
+                properties:
+                  layoutPreset:
+                    const: eccw-two-competitor-panel-template
+          then:
+            properties:
+              canvas:
+                properties:
+                  width:
+                    const: 1920
+                  height:
+                    const: 1080
+              templateBackground:
+                properties:
+                  fileName:
+                    const: ECCW_JordanSinner_vs_EddieSlayer_template_bg_v1.png
+              assets:
+                required: [competitorLeft, competitorRight, showLogo]
+                maxProperties: 3
+              text:
+                required: [competitorLeftName, competitorRightName, matchTitle, date]
+                maxProperties: 4
+                properties:
+                  matchTitle:
+                    const: VS
       example:
         briefName: ECCW Breakker vs Rage
         canvas:
