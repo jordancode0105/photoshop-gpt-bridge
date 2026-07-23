@@ -815,6 +815,7 @@ const eccwVsDirectionSchema = z
     fontSize: z.number().min(40).max(100).optional(),
     xOffset: eccwTextOffsetSchema.optional(),
     yOffset: eccwTextOffsetSchema.optional(),
+    fill: rgbSchema.optional(),
   })
   .strict();
 const eccwArtDirectionSchema = z

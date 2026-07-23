@@ -1014,6 +1014,8 @@ components:
           minimum: -150
           maximum: 150
           default: 6
+        fill:
+          $ref: "#/components/schemas/RgbColor"
 
     EccwArtDirection:
       type: object

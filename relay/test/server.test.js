@@ -956,6 +956,48 @@ test("read-only ECCW planning preserves requested art direction for worker resol
   assert.equal(claimed.body.requiresConfirmation, false);
 });
 
+test("ECCW VS fill schema accepts the canonical RGB control and rejects malformed RGB", async () => {
+  const canonicalFill = { red: 198, green: 24, blue: 32 };
+  const created = await request("/api/jobs/plan-match-card", {
+    body: validEccwPanelCreate({
+      artDirection: {
+        vs: {
+          fontSize: 76,
+          xOffset: 0,
+          yOffset: 8,
+          fill: canonicalFill,
+        },
+      },
+    }),
+  });
+  assert.equal(created.response.status, 202);
+  let claimed = null;
+  for (let attempt = 0; attempt < 12; attempt += 1) {
+    const candidate = await pluginRequest({ capability: "powershell-v1" });
+    assert.equal(candidate.response.status, 200);
+    if (candidate.body.id === created.body.jobId) {
+      claimed = candidate;
+      break;
+    }
+  }
+  assert.ok(claimed);
+  assert.deepEqual(claimed.body.payload.artDirection.vs, {
+    fontSize: 76,
+    xOffset: 0,
+    yOffset: 8,
+    fill: canonicalFill,
+  });
+
+  const malformed = await request("/api/jobs/create-match-card", {
+    body: validEccwPanelCreate({
+      artDirection: {
+        vs: { fill: { red: 256, green: 24, blue: 32 } },
+      },
+    }),
+  });
+  assert.equal(malformed.response.status, 400);
+});
+
 test("ECCW panel-template preset rejects incompatible geometry and content", async () => {
   const cases = [
     validEccwPanelCreate({ canvas: validCanvas({ width: 1672, height: 941 }) }),
@@ -1053,7 +1095,7 @@ test("ECCW worker preset preserves the template and validates deterministic plac
   assert.match(workerSource, /var logoDefaults = \{ visibleWidth: 260, xOffset: 0, yOffset: 0 \}/);
   assert.match(workerSource, /fontSize: 66, xOffset: 0, yOffset: 0/);
   assert.match(workerSource, /fontSize: 30, xOffset: 0, yOffset: 0/);
-  assert.match(workerSource, /fontSize: 78, xOffset: 0, yOffset: 6/);
+  assert.match(workerSource, /fontSize: 78,\s+xOffset: 0,\s+yOffset: 6,\s+fill:/);
   assert.match(workerSource, /function createMatchCardGroups\(document, layoutPreset\)/);
   assert.match(
     workerSource,
@@ -1157,7 +1199,7 @@ test("ECCW worker preset preserves the template and validates deterministic plac
   assert.match(workerSource, /adjustments: adjustments/);
   assert.match(workerSource, /artDirection: resolvedArtDirection \? \{/);
   assert.match(planSource, /resolvedEccwArtDirection\(payload\.artDirection \|\| \{\}\)/);
-  assert.match(planSource, /requested: requestedArtDirection \|\| \{\}/);
+  assert.match(planSource, /requested: plannedRequestedArtDirection/);
   assert.match(planSource, /resolved: resolvedArtDirection/);
   assert.doesNotMatch(planSource, /installedFonts|safeTransformBounds|app\.activeDocument/);
   assert.match(workerSource, /assertEccwCompetitorVisible\(document, semantic\[assetRole\]/);
@@ -1165,6 +1207,103 @@ test("ECCW worker preset preserves the template and validates deterministic plac
   assert.match(workerSource, /role \+ " is not below the live text and finishing groups\."/);
   assert.match(workerSource, /validateEccwPreviewLayout\(document, semantic/);
   assert.match(workerSource, /rectangleGeometry\.width \* rectangleGeometry\.height > canvasArea \* 0\.25/);
+});
+
+test("ECCW VS fill resolves, renders, validates, and records one canonical red", () => {
+  const workerSource = readFileSync(
+    path.resolve(process.cwd(), "..", "local-agent", "bridge-worker.jsx"),
+    "utf8"
+  );
+  const rgbEqualStart = workerSource.indexOf("function eccwRgbEqual(");
+  const rgbTextStart = workerSource.indexOf(
+    "\n    function eccwRgbText(",
+    rgbEqualStart
+  );
+  assert.ok(rgbEqualStart >= 0);
+  assert.ok(rgbTextStart > rgbEqualStart);
+  const rgbEqual = Function(
+    `"use strict"; return (${workerSource.slice(rgbEqualStart, rgbTextStart).trim()});`
+  )();
+  const resolveStart = workerSource.indexOf("function resolveEccwVsFill(");
+  const resolveEnd = workerSource.indexOf(
+    "\n    function validateEccwShadow(",
+    resolveStart
+  );
+  assert.ok(resolveStart >= 0);
+  assert.ok(resolveEnd > resolveStart);
+  const canonicalFill = { red: 198, green: 24, blue: 32 };
+  assert.equal(rgbEqual(canonicalFill, canonicalFill, 0), true);
+  assert.equal(rgbEqual({ red: 178, green: 0, blue: 24 }, canonicalFill, 0), false);
+  const resolveFill = Function(
+    "ECCW_VS_APPROVED_FILL",
+    "eccwRgbEqual",
+    "eccwRgbText",
+    "cloneJsonValue",
+    `"use strict"; return (${workerSource.slice(resolveStart, resolveEnd).trim()});`
+  )(
+    canonicalFill,
+    rgbEqual,
+    (value) => `rgb(${Number(value.red)},${Number(value.green)},${Number(value.blue)})`,
+    (value) => structuredClone(value)
+  );
+  assert.deepEqual(resolveFill(null), canonicalFill);
+  assert.deepEqual(resolveFill(canonicalFill), canonicalFill);
+  assert.throws(
+    () => resolveFill({ red: 178, green: 0, blue: 24 }),
+    /expected=rgb\(198,24,32\) actual=rgb\(178,0,24\)/
+  );
+
+  assert.match(
+    workerSource,
+    /var ECCW_VS_APPROVED_FILL = \{ red: 198, green: 24, blue: 32 \};/
+  );
+  assert.equal(
+    (workerSource.match(/ECCW_VS_APPROVED_FILL = \{ red: 198, green: 24, blue: 32 \}/g) || [])
+      .length,
+    1
+  );
+  assert.match(
+    workerSource,
+    /assertAllowedKeys\(requirePlainObject\(value\.vs, label \+ "\.vs"\), \["fontSize", "xOffset", "yOffset", "fill"\]/
+  );
+  assert.match(workerSource, /validateRgb\(value\.vs\.fill, label \+ "\.vs\.fill"\)/);
+  assert.match(
+    workerSource,
+    /fill: resolveEccwVsFill\(requested\.vs && own\(requested\.vs, "fill"\) \? requested\.vs\.fill : null\)/
+  );
+  assert.match(workerSource, /resolved\.vs\.fill = resolveEccwVsFill\(resolved\.vs\.fill\)/);
+  assert.match(
+    workerSource,
+    /vsFill: buildEccwVsFillDiagnostics\(requestedArtDirection \|\| \{\}, resolvedArtDirection, null\)/
+  );
+  assert.match(
+    workerSource,
+    /style\.layoutPreset === ECCW_PANEL_LAYOUT_PRESET && role === "matchTitle"\) \{\s+rgb = artDirection\.vs\.fill;/
+  );
+  assert.match(workerSource, /var configuredVsFill = artDirection\.vs\.fill/);
+  assert.doesNotMatch(workerSource, /color\.rgb\.red = 198;\s*color\.rgb\.green = 24;\s*color\.rgb\.blue = 32/);
+  assert.match(workerSource, /var expectedVersusColor = artDirection\.vs\.fill/);
+  assert.match(workerSource, /var versusFillPassed = eccwRgbEqual\(versusColor, expectedVersusColor, 1\)/);
+  assert.match(
+    workerSource,
+    /"VS fill validation failed: expected=" \+ eccwRgbText\(expectedVersusColor\) \+\s+" actual=" \+ eccwRgbText\(versusColor\)/
+  );
+  assert.match(workerSource, /record\.vsFill = buildEccwVsFillDiagnostics/);
+  assert.match(workerSource, /requestedFill: requestedFill/);
+  assert.match(workerSource, /presetDefaultFill: cloneJsonValue\(ECCW_VS_APPROVED_FILL\)/);
+  assert.match(workerSource, /finalResolvedFill: cloneJsonValue\(resolved\.vs\.fill\)/);
+  assert.match(workerSource, /appliedPhotoshopTextLayerFill:/);
+  assert.match(workerSource, /measuredValidationFill:/);
+  assert.match(workerSource, /validationPassed:/);
+
+  const createTextStart = workerSource.indexOf("function createEditableMatchText(");
+  const createTextEnd = workerSource.indexOf(
+    "\n    function applyApprovedEccwTextStyles(",
+    createTextStart
+  );
+  const createTextSource = workerSource.slice(createTextStart, createTextEnd);
+  assert.match(createTextSource, /var color = new SolidColor\(\), rgb = role === "championship" \? style\.metallicColor : style\.accentColor/);
+  assert.match(createTextSource, /style\.layoutPreset === ECCW_PANEL_LAYOUT_PRESET && role === "matchTitle"/);
 });
 
 test("ECCW logo placement derives final width from transparent source pixels", () => {

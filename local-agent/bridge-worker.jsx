@@ -1372,6 +1372,7 @@
     var ECCW_PANEL_CANVAS_HEIGHT = 1080;
     var ECCW_LOGO_WIDTH_VERIFICATION_TOLERANCE = 1;
     var ECCW_LOGO_MAX_CORRECTION_ITERATIONS = 3;
+    var ECCW_VS_APPROVED_FILL = { red: 198, green: 24, blue: 32 };
     var MATCH_VISIBILITY_ROLES = [
         "templateBackground", "atmosphere", "framesAndPanels", "competitorRenders",
         "championshipAndBelt", "matchTitleGroup", "eventInformation", "showLogoGroup",
@@ -1563,6 +1564,25 @@
             throw new Error(label + "." + key + " must be from " + minimum + " through " + maximum + ".");
         }
     }
+    function eccwRgbEqual(left, right, tolerance) {
+        tolerance = Number(tolerance || 0);
+        return Boolean(left && right) &&
+            Math.abs(Number(left.red) - Number(right.red)) <= tolerance &&
+            Math.abs(Number(left.green) - Number(right.green)) <= tolerance &&
+            Math.abs(Number(left.blue) - Number(right.blue)) <= tolerance;
+    }
+    function eccwRgbText(value) {
+        return "rgb(" + Number(value.red) + "," + Number(value.green) + "," + Number(value.blue) + ")";
+    }
+    function resolveEccwVsFill(requestedFill) {
+        if (requestedFill && !eccwRgbEqual(requestedFill, ECCW_VS_APPROVED_FILL, 0)) {
+            throw new Error(
+                "artDirection.vs.fill must match the ECCW preset-approved fill: expected=" +
+                eccwRgbText(ECCW_VS_APPROVED_FILL) + " actual=" + eccwRgbText(requestedFill) + "."
+            );
+        }
+        return cloneJsonValue(ECCW_VS_APPROVED_FILL);
+    }
     function validateEccwShadow(value, label) {
         assertAllowedKeys(requirePlainObject(value, label), ["enabled", "opacity", "distance", "blur"], label);
         if (own(value, "enabled") && typeof value.enabled !== "boolean") throw new Error(label + ".enabled must be boolean.");
@@ -1638,10 +1658,11 @@
             if (own(topPlate, "stipulation")) validateEccwTopTextDirection(topPlate.stipulation, label + ".topPlate.stipulation", true);
         }
         if (own(value, "vs")) {
-            assertAllowedKeys(requirePlainObject(value.vs, label + ".vs"), ["fontSize", "xOffset", "yOffset"], label + ".vs");
+            assertAllowedKeys(requirePlainObject(value.vs, label + ".vs"), ["fontSize", "xOffset", "yOffset", "fill"], label + ".vs");
             validateOptionalRange(value.vs, "fontSize", 40, 100, label + ".vs");
             validateOptionalRange(value.vs, "xOffset", -150, 150, label + ".vs");
             validateOptionalRange(value.vs, "yOffset", -150, 150, label + ".vs");
+            if (own(value.vs, "fill")) validateRgb(value.vs.fill, label + ".vs.fill");
         }
     }
     function mergeEccwDirection(defaults, override) {
@@ -1713,11 +1734,36 @@
                 date: date,
                 stipulation: stipulation
             },
-            vs: mergeEccwDirection({ fontSize: 78, xOffset: 0, yOffset: 6 }, requested.vs || {})
+            vs: mergeEccwDirection({
+                fontSize: 78,
+                xOffset: 0,
+                yOffset: 6,
+                fill: resolveEccwVsFill(requested.vs && own(requested.vs, "fill") ? requested.vs.fill : null)
+            }, requested.vs || {})
         };
+        resolved.vs.fill = resolveEccwVsFill(resolved.vs.fill);
         if (resolved.nameplates.minimumFontSize > resolved.nameplates.maximumFontSize) throw new Error("Resolved nameplate minimumFontSize exceeds maximumFontSize.");
         validateResolvedEccwTopPlateSpacing(resolved);
         return resolved;
+    }
+    function buildEccwVsFillDiagnostics(requested, resolved, runtime) {
+        var requestedFill = requested && requested.vs && own(requested.vs, "fill") ?
+            cloneJsonValue(requested.vs.fill) :
+            null;
+        return {
+            requestedFill: requestedFill,
+            presetDefaultFill: cloneJsonValue(ECCW_VS_APPROVED_FILL),
+            finalResolvedFill: cloneJsonValue(resolved.vs.fill),
+            appliedPhotoshopTextLayerFill: runtime && runtime.appliedPhotoshopTextLayerFill ?
+                cloneJsonValue(runtime.appliedPhotoshopTextLayerFill) :
+                null,
+            measuredValidationFill: runtime && runtime.measuredValidationFill ?
+                cloneJsonValue(runtime.measuredValidationFill) :
+                null,
+            validationPassed: runtime && typeof runtime.validationPassed === "boolean" ?
+                runtime.validationPassed :
+                null
+        };
     }
     function validateVisibility(value) {
         if (!(value instanceof Array) || value.length < 1 || value.length > 40) throw new Error("changes.visibility must contain 1 through 40 entries.");
@@ -2020,6 +2066,11 @@
         var preflight = preflightCreateMatchCard(input, payload);
         var requestedArtDirection = payload.style.layoutPreset === ECCW_PANEL_LAYOUT_PRESET && own(payload, "artDirection") ? cloneJsonValue(payload.artDirection) : null;
         var resolvedArtDirection = payload.style.layoutPreset === ECCW_PANEL_LAYOUT_PRESET ? resolvedEccwArtDirection(payload.artDirection || {}) : null;
+        var plannedRequestedArtDirection = resolvedArtDirection ? cloneJsonValue(requestedArtDirection || {}) : null;
+        if (plannedRequestedArtDirection) {
+            if (!own(plannedRequestedArtDirection, "vs")) plannedRequestedArtDirection.vs = {};
+            if (!own(plannedRequestedArtDirection.vs, "fill")) plannedRequestedArtDirection.vs.fill = null;
+        }
         var plannedText = cloneJsonValue(payload.text);
         if (resolvedArtDirection && own(resolvedArtDirection.topPlate.stipulation, "text")) {
             plannedText.stipulation = resolvedArtDirection.topPlate.stipulation.text;
@@ -2034,8 +2085,9 @@
             assetMappings: payload.assets,
             templateBackground: payload.templateBackground,
             artDirection: resolvedArtDirection ? {
-                requested: requestedArtDirection || {},
-                resolved: resolvedArtDirection
+                requested: plannedRequestedArtDirection,
+                resolved: resolvedArtDirection,
+                vsFill: buildEccwVsFillDiagnostics(requestedArtDirection || {}, resolvedArtDirection, null)
             } : null,
             outputPsdName: payload.outputPsdName,
             outputPreviewName: payload.outputPreviewName,
@@ -3083,6 +3135,8 @@
         var color = new SolidColor(), rgb = role === "championship" ? style.metallicColor : style.accentColor;
         if (style.layoutPreset === ECCW_PANEL_LAYOUT_PRESET && (role === "competitorLeftName" || role === "competitorRightName")) {
             rgb = { red: 255, green: 255, blue: 255 };
+        } else if (style.layoutPreset === ECCW_PANEL_LAYOUT_PRESET && role === "matchTitle") {
+            rgb = artDirection.vs.fill;
         } else if (style.layoutPreset === ECCW_PANEL_LAYOUT_PRESET && (role === "date" || role === "stipulation")) {
             rgb = artDirection.topPlate[role].fill;
         }
@@ -3104,7 +3158,8 @@
             catch (fontError) { throw new Error("Photoshop could not apply the approved ECCW font to " + role + ": " + fontError.message); }
             var color = new SolidColor();
             if (role === "matchTitle") {
-                color.rgb.red = 198; color.rgb.green = 24; color.rgb.blue = 32;
+                var configuredVsFill = artDirection.vs.fill;
+                color.rgb.red = configuredVsFill.red; color.rgb.green = configuredVsFill.green; color.rgb.blue = configuredVsFill.blue;
             } else if (role === "date" || role === "stipulation") {
                 var configuredFill = artDirection.topPlate[role].fill;
                 color.rgb.red = configuredFill.red; color.rgb.green = configuredFill.green; color.rgb.blue = configuredFill.blue;
@@ -3257,7 +3312,7 @@
         }
         return geometry;
     }
-    function validateEccwPreviewLayout(document, semantic, layoutPreset, assets, text, groups, approvedFont, artDirection) {
+    function validateEccwPreviewLayout(document, semantic, layoutPreset, assets, text, groups, approvedFont, artDirection, runtimeDiagnostics) {
         if (layoutPreset !== ECCW_PANEL_LAYOUT_PRESET) return;
         if (toPixels(document.width) !== ECCW_PANEL_CANVAS_WIDTH || toPixels(document.height) !== ECCW_PANEL_CANVAS_HEIGHT) {
             throw new Error("ECCW preview validation requires an exact 1920x1080 canvas.");
@@ -3341,7 +3396,21 @@
         var versusSize = textPointSize(semantic.matchTitle, "matchTitle");
         if (versusSize < 40 || versusSize > Number(artDirection.vs.fontSize) + 0.1) throw new Error("VS is outside its resolved fit range.");
         var versusColor = textColorChannels(semantic.matchTitle, "matchTitle");
-        if (versusColor.red < 150 || versusColor.red <= versusColor.green || versusColor.red <= versusColor.blue) throw new Error("VS must use the approved red fill.");
+        var expectedVersusColor = artDirection.vs.fill;
+        var versusFillPassed = eccwRgbEqual(versusColor, expectedVersusColor, 1);
+        if (runtimeDiagnostics) {
+            runtimeDiagnostics.vsFill = {
+                appliedPhotoshopTextLayerFill: cloneJsonValue(expectedVersusColor),
+                measuredValidationFill: cloneJsonValue(versusColor),
+                validationPassed: versusFillPassed
+            };
+        }
+        if (!versusFillPassed) {
+            throw new Error(
+                "VS fill validation failed: expected=" + eccwRgbText(expectedVersusColor) +
+                " actual=" + eccwRgbText(versusColor) + "."
+            );
+        }
         var leftNameBounds = assertLayerCenter(semantic.competitorLeftName, "competitorLeftName", 515, 925, 2);
         var rightNameBounds = assertLayerCenter(semantic.competitorRightName, "competitorRightName", 1405, 925, 2);
         var leftNameGeometry = textPositionAndSize("competitorLeftName", ECCW_PANEL_CANVAS_WIDTH, ECCW_PANEL_CANVAS_HEIGHT, ECCW_PANEL_LAYOUT_PRESET, artDirection);
@@ -3860,10 +3929,40 @@
             requireString(value.postScaleContainmentOrNormalization[actionIndex], label + ".postScaleContainmentOrNormalization entry", 1, 160, false);
         }
     }
+    function validateEccwVsFillDiagnostics(value) {
+        var label = "manifest artDirection.vsFill";
+        assertAllowedKeys(requirePlainObject(value, label), [
+            "requestedFill", "presetDefaultFill", "finalResolvedFill",
+            "appliedPhotoshopTextLayerFill", "measuredValidationFill", "validationPassed"
+        ], label);
+        if (value.requestedFill !== null) {
+            validateRgb(value.requestedFill, label + ".requestedFill");
+            if (!eccwRgbEqual(value.requestedFill, ECCW_VS_APPROVED_FILL, 0)) throw new Error(label + ".requestedFill is not preset-approved.");
+        }
+        validateRgb(value.presetDefaultFill, label + ".presetDefaultFill");
+        validateRgb(value.finalResolvedFill, label + ".finalResolvedFill");
+        validateRgb(value.appliedPhotoshopTextLayerFill, label + ".appliedPhotoshopTextLayerFill");
+        var measured = requirePlainObject(value.measuredValidationFill, label + ".measuredValidationFill");
+        assertAllowedKeys(measured, ["red", "green", "blue"], label + ".measuredValidationFill");
+        var channels = ["red", "green", "blue"];
+        for (var channelIndex = 0; channelIndex < channels.length; channelIndex++) {
+            var channel = channels[channelIndex], measuredChannel = Number(measured[channel]);
+            if (!own(measured, channel) || !isFinite(measuredChannel) || measuredChannel < 0 || measuredChannel > 255) {
+                throw new Error(label + ".measuredValidationFill." + channel + " is invalid.");
+            }
+        }
+        if (
+            !eccwRgbEqual(value.presetDefaultFill, ECCW_VS_APPROVED_FILL, 0) ||
+            !eccwRgbEqual(value.finalResolvedFill, ECCW_VS_APPROVED_FILL, 0) ||
+            !eccwRgbEqual(value.appliedPhotoshopTextLayerFill, ECCW_VS_APPROVED_FILL, 0)
+        ) throw new Error(label + " does not use the canonical preset fill.");
+        if (!eccwRgbEqual(value.measuredValidationFill, ECCW_VS_APPROVED_FILL, 1)) throw new Error(label + ".measuredValidationFill failed read-back validation.");
+        if (value.validationPassed !== true) throw new Error(label + ".validationPassed must be true for a completed manifest.");
+    }
     function validateManifestArtDirection(value) {
         assertAllowedKeys(requirePlainObject(value, "manifest artDirection"), [
             "requested", "resolved", "installedFont", "finalTextBounds",
-            "competitorVisibleBounds", "masks", "adjustments", "logoPlacement"
+            "competitorVisibleBounds", "masks", "adjustments", "logoPlacement", "vsFill"
         ], "manifest artDirection");
         validateEccwArtDirection(value.requested, "manifest artDirection.requested");
         validateEccwArtDirection(value.resolved, "manifest artDirection.resolved");
@@ -3895,6 +3994,7 @@
             }
         }
         if (own(value, "logoPlacement")) validateEccwLogoPlacementDiagnostics(value.logoPlacement);
+        if (own(value, "vsFill")) validateEccwVsFillDiagnostics(value.vsFill);
     }
     function validateMatchCardManifest(manifest) {
         var allowed = [
@@ -3994,7 +4094,7 @@
         for (var i = 0; i < group.layers.length; i++) if (group.layers[i].name === name) return group.layers[i];
         return null;
     }
-    function buildEccwArtDirectionRecord(document, semantic, groups, requested, resolved, approvedFont, logoPlacementDiagnostics) {
+    function buildEccwArtDirectionRecord(document, semantic, groups, requested, resolved, approvedFont, logoPlacementDiagnostics, vsFillRuntimeDiagnostics) {
         var textBounds = {}, textRoles = ["competitorLeftName", "competitorRightName", "matchTitle", "date", "stipulation"];
         for (var textIndex = 0; textIndex < textRoles.length; textIndex++) {
             var textRole = textRoles[textIndex];
@@ -4042,6 +4142,7 @@
             adjustments: adjustments
         };
         if (logoPlacementDiagnostics) record.logoPlacement = cloneJsonValue(logoPlacementDiagnostics);
+        record.vsFill = buildEccwVsFillDiagnostics(requested || {}, resolved, vsFillRuntimeDiagnostics || null);
         return record;
     }
     function buildCreateManifest(input, payload, semanticLayers, warnings, artDirectionRecord) {
@@ -4140,9 +4241,9 @@
             }
 
             stage = "validate deterministic preview";
-            validateEccwPreviewLayout(document, semantic, payload.style.layoutPreset, payload.assets, payload.text, groups, approvedEccwFont, artDirection);
+            validateEccwPreviewLayout(document, semantic, payload.style.layoutPreset, payload.assets, payload.text, groups, approvedEccwFont, artDirection, placementDiagnostics);
             var artDirectionRecord = artDirection ?
-                buildEccwArtDirectionRecord(document, semantic, groups, requestedArtDirection, artDirection, approvedEccwFont, placementDiagnostics.showLogo) :
+                buildEccwArtDirectionRecord(document, semantic, groups, requestedArtDirection, artDirection, approvedEccwFont, placementDiagnostics.showLogo, placementDiagnostics.vsFill) :
                 null;
 
             stage = "save layered PSD";
@@ -4176,6 +4277,7 @@
                 protectedAssetsPlacedAsSmartObjects: true,
                 originalAssetsPreserved: true,
                 logoPlacement: placementDiagnostics.showLogo ? cloneJsonValue(placementDiagnostics.showLogo) : null,
+                vsFill: artDirectionRecord ? cloneJsonValue(artDirectionRecord.vsFill) : null,
                 warnings: warnings
             };
         } catch (error) {
@@ -4461,7 +4563,7 @@
         var approvedEccwFont = null;
         var updateRequestedArtDirection = previousManifest.artDirection ? cloneJsonValue(previousManifest.artDirection.requested) : {};
         var updateArtDirection = previousManifest.layoutPreset === ECCW_PANEL_LAYOUT_PRESET ?
-            (previousManifest.artDirection ? cloneJsonValue(previousManifest.artDirection.resolved) : resolvedEccwArtDirection({})) :
+            (previousManifest.artDirection ? resolvedEccwArtDirection(previousManifest.artDirection.resolved) : resolvedEccwArtDirection({})) :
             null;
         if (previousManifest.layoutPreset === ECCW_PANEL_LAYOUT_PRESET) {
             if (!own(payload.changes, "placements")) payload.changes.placements = {};
@@ -4665,7 +4767,7 @@
             var effectivePreviewAssets = cloneJsonValue(previousManifest.assets), effectivePreviewText = cloneJsonValue(previousManifest.text);
             if (own(payload.changes, "assets")) mergeOwn(effectivePreviewAssets, payload.changes.assets);
             if (own(payload.changes, "text")) mergeOwn(effectivePreviewText, payload.changes.text);
-            validateEccwPreviewLayout(workingDocument, references, previousManifest.layoutPreset, effectivePreviewAssets, effectivePreviewText, groups, approvedEccwFont, updateArtDirection);
+            validateEccwPreviewLayout(workingDocument, references, previousManifest.layoutPreset, effectivePreviewAssets, effectivePreviewText, groups, approvedEccwFont, updateArtDirection, placementDiagnostics);
 
             stage = "save versioned layered PSD";
             if (outputPsd.exists || outputPreview.exists || outputManifest.exists) throw new Error("An update output appeared while the job was running; no output was overwritten.");
@@ -4696,7 +4798,8 @@
                         previousManifest.artDirection && previousManifest.artDirection.logoPlacement ?
                             previousManifest.artDirection.logoPlacement :
                             null
-                    )
+                    ),
+                    placementDiagnostics.vsFill
                 );
             }
             validateMatchCardManifest(updatedManifest);
@@ -4713,6 +4816,9 @@
                 previousVersionPreserved: true,
                 protectedAssetsPlacedAsSmartObjects: true,
                 logoPlacement: placementDiagnostics.showLogo ? cloneJsonValue(placementDiagnostics.showLogo) : null,
+                vsFill: updatedManifest.artDirection && updatedManifest.artDirection.vsFill ?
+                    cloneJsonValue(updatedManifest.artDirection.vsFill) :
+                    null,
                 warnings: warnings
             };
         } catch (error) {
