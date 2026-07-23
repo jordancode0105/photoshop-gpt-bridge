@@ -119,12 +119,125 @@ $writeJobTypes = @(
 )
 $baleConfigRequiredJobTypes = @("createMatchCard", "updateMatchCard")
 
+function ConvertTo-SafeRelayResponseBody {
+    param([AllowNull()][object]$Body)
+
+    if ($null -eq $Body) { return "<empty>" }
+    $safe = [string]$Body
+    if ([string]::IsNullOrWhiteSpace($safe)) { return "<empty>" }
+
+    # Relay error bodies are useful diagnostics, but they are still untrusted
+    # text. Redact credential-shaped values and local paths before logging.
+    if (-not [string]::IsNullOrEmpty($deviceToken)) {
+        $safe = $safe.Replace($deviceToken, "[REDACTED]")
+    }
+    $safe = [regex]::Replace($safe, '(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+', 'Bearer [REDACTED]')
+    $safe = [regex]::Replace(
+        $safe,
+        '(?i)(?:"?(?:authorization|x-device-token|device[_-]?token|photoshop_device_token|gpt_action_api_key|api[_-]?key|secret)"?\s*[:=]\s*)(?:"[^"]*"|[^,\s;}]+)',
+        '[REDACTED]'
+    )
+    $safe = [regex]::Replace(
+        $safe,
+        '(?i)\b(?:GPT_ACTION_API_KEY|PHOTOSHOP_DEVICE_TOKEN|DEVICE_TOKEN)\b',
+        '[REDACTED_SETTING]'
+    )
+    $safe = [regex]::Replace($safe, '[A-Za-z]:[\\/][^"\r\n,}]*', '[local path omitted]')
+    $safe = [regex]::Replace($safe, '\\\\[^\\\r\n]+\\[^"\r\n,}]*', '[local path omitted]')
+    $safe = [regex]::Replace($safe, '[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]', '?')
+    $safe = [regex]::Replace($safe, '\s+', ' ').Trim()
+
+    if ($safe.Length -gt 2000) {
+        $safe = $safe.Substring(0, 2000) + "...[truncated]"
+    }
+    return $safe
+}
+
+function Get-RelayHttpErrorDetails {
+    param([Parameter(Mandatory = $true)][System.Management.Automation.ErrorRecord]$ErrorRecord)
+
+    $responseProperty = $ErrorRecord.Exception.PSObject.Properties["Response"]
+    $response = if ($null -ne $responseProperty) { $responseProperty.Value } else { $null }
+    $statusCode = "unavailable"
+    $bodyCandidates = @()
+
+    if ($null -ne $response) {
+        try {
+            $statusProperty = $response.PSObject.Properties["StatusCode"]
+            if ($null -ne $statusProperty -and $null -ne $statusProperty.Value) {
+                $statusCode = [string]([int]$statusProperty.Value)
+            }
+        }
+        catch {
+            # Diagnostics must never replace the original relay exception.
+        }
+    }
+
+    if ($null -ne $ErrorRecord.ErrorDetails -and
+        -not [string]::IsNullOrWhiteSpace($ErrorRecord.ErrorDetails.Message)) {
+        $bodyCandidates += [string]$ErrorRecord.ErrorDetails.Message
+    }
+
+    if ($null -ne $response) {
+        try {
+            $contentProperty = $response.PSObject.Properties["Content"]
+            if ($null -ne $contentProperty -and $null -ne $contentProperty.Value) {
+                $content = $contentProperty.Value
+                if ($content -is [string]) {
+                    $bodyCandidates += [string]$content
+                }
+                elseif ($null -ne $content.PSObject.Methods["ReadAsStringAsync"]) {
+                    $contentTask = $content.ReadAsStringAsync()
+                    $contentAwaiter = $contentTask.GetAwaiter()
+                    $bodyCandidates += [string]$contentAwaiter.GetResult()
+                }
+            }
+        }
+        catch {
+            # Fall through to the Windows PowerShell response stream path.
+        }
+
+        try {
+            if ($null -ne $response.PSObject.Methods["GetResponseStream"]) {
+                $stream = $response.GetResponseStream()
+                if ($null -ne $stream) {
+                    $reader = [System.IO.StreamReader]::new($stream)
+                    try {
+                        $bodyCandidates += [string]$reader.ReadToEnd()
+                    }
+                    finally {
+                        $reader.Dispose()
+                    }
+                }
+            }
+        }
+        catch {
+            # Some response implementations expose no readable stream.
+        }
+    }
+
+    $responseBody = $null
+    foreach ($candidate in $bodyCandidates) {
+        if (-not [string]::IsNullOrWhiteSpace($candidate)) {
+            $responseBody = $candidate
+            break
+        }
+    }
+
+    return [PSCustomObject]@{
+        StatusCode = $statusCode
+        ResponseBody = ConvertTo-SafeRelayResponseBody -Body $responseBody
+    }
+}
+
 function Invoke-Relay {
     param(
         [Parameter(Mandatory = $true)][ValidateSet("GET", "POST")][string]$Method,
         [Parameter(Mandatory = $true)][string]$Path,
         [object]$Body = $null,
-        [switch]$AllowNoContent
+        [switch]$AllowNoContent,
+        [string]$JobId = "",
+        [string]$OperationType = ""
     )
 
     $uri = "$relayUrl$Path"
@@ -136,21 +249,31 @@ function Invoke-Relay {
         return Invoke-RestMethod -Method Post -Uri $uri -Headers $headers -ContentType "application/json" -Body $json -TimeoutSec 65
     }
     catch {
-        $response = $_.Exception.Response
+        $responseProperty = $_.Exception.PSObject.Properties["Response"]
+        $response = if ($null -ne $responseProperty) { $responseProperty.Value } else { $null }
         if ($AllowNoContent -and $null -ne $response -and [int]$response.StatusCode -eq 204) { return $null }
+
+        $diagnostic = Get-RelayHttpErrorDetails -ErrorRecord $_
+        $context = ""
+        if (-not [string]::IsNullOrWhiteSpace($JobId)) { $context += "; jobId=$JobId" }
+        if (-not [string]::IsNullOrWhiteSpace($OperationType)) { $context += "; operation=$OperationType" }
+        Write-BridgeLog (
+            "Relay request failed: HTTP status $($diagnostic.StatusCode)$context; " +
+            "response body: $($diagnostic.ResponseBody)"
+        ) "ERROR"
         throw
     }
 }
 
 function Complete-Job {
-    param([string]$JobId, [object]$Result)
-    Invoke-Relay -Method POST -Path "/api/plugin/jobs/$([Uri]::EscapeDataString($JobId))/complete" -Body @{ result = $Result } | Out-Null
+    param([string]$JobId, [string]$OperationType, [object]$Result)
+    Invoke-Relay -Method POST -Path "/api/plugin/jobs/$([Uri]::EscapeDataString($JobId))/complete" -Body @{ result = $Result } -JobId $JobId -OperationType $OperationType | Out-Null
 }
 
 function Fail-Job {
-    param([string]$JobId, [string]$ErrorMessage)
+    param([string]$JobId, [string]$OperationType, [string]$ErrorMessage)
     if ($ErrorMessage.Length -gt 3900) { $ErrorMessage = $ErrorMessage.Substring(0, 3900) }
-    Invoke-Relay -Method POST -Path "/api/plugin/jobs/$([Uri]::EscapeDataString($JobId))/fail" -Body @{ error = $ErrorMessage } | Out-Null
+    Invoke-Relay -Method POST -Path "/api/plugin/jobs/$([Uri]::EscapeDataString($JobId))/fail" -Body @{ error = $ErrorMessage } -JobId $JobId -OperationType $OperationType | Out-Null
 }
 
 function Invoke-PhotoshopJob {
@@ -255,7 +378,7 @@ if (
         $isReadOnlyJob = $readOnlyJobTypes -contains $jobType
         $isWriteJob = $writeJobTypes -contains $jobType
         if (-not $isReadOnlyJob -and -not $isWriteJob) {
-            Fail-Job -JobId $job.id -ErrorMessage "Unsupported operation type rejected by the local Photoshop agent: $jobType"
+            Fail-Job -JobId $job.id -OperationType $jobType -ErrorMessage "Unsupported operation type rejected by the local Photoshop agent: $jobType"
             Write-BridgeLog "Rejected unsupported job type: $jobType" "WARN"
             continue
         }
@@ -263,7 +386,7 @@ if (
         if ($propertyNames -contains "executor") {
             $executor = [string]$job.executor
             if ($executor -ne "any" -and $executor -ne "powershell-v1") {
-                Fail-Job -JobId $job.id -ErrorMessage "Unexpected executor rejected by the local Photoshop agent: $executor"
+                Fail-Job -JobId $job.id -OperationType $jobType -ErrorMessage "Unexpected executor rejected by the local Photoshop agent: $executor"
                 Write-BridgeLog "Rejected job for unexpected executor: $executor" "WARN"
                 continue
             }
@@ -273,27 +396,27 @@ if (
             $baleConfigRequiredJobTypes -contains $jobType -and
             ([string]::IsNullOrWhiteSpace($baleCcPackageFile) -or [string]::IsNullOrWhiteSpace($baleCcGroupName))
         ) {
-            Fail-Job -JobId $job.id -ErrorMessage "BALE_CC_PACKAGE_FILE and BALE_CC_GROUP_NAME must be configured locally before running this operation."
+            Fail-Job -JobId $job.id -OperationType $jobType -ErrorMessage "BALE_CC_PACKAGE_FILE and BALE_CC_GROUP_NAME must be configured locally before running this operation."
             Write-BridgeLog "Rejected $jobType because Bale CC is not configured." "WARN"
             continue
         }
 
         Write-BridgeLog "Claimed $jobType job $($job.id)" "OK"
         if ($isWriteJob -and -not (Confirm-WriteJob -Job $job)) {
-            Fail-Job -JobId $job.id -ErrorMessage "Rejected by user in the local Photoshop agent."
+            Fail-Job -JobId $job.id -OperationType $jobType -ErrorMessage "Rejected by user in the local Photoshop agent."
             Write-BridgeLog "Job rejected." "WARN"
             continue
         }
 
         try {
             $result = Invoke-PhotoshopJob -Job $job -Photoshop $photoshop
-            Complete-Job -JobId $job.id -Result $result
+            Complete-Job -JobId $job.id -OperationType $jobType -Result $result
             Write-BridgeLog "Completed job $($job.id)" "OK"
             Write-Host ($result | ConvertTo-Json -Depth 30)
         }
         catch {
             $message = $_.Exception.Message
-            try { Fail-Job -JobId $job.id -ErrorMessage $message } catch { Write-BridgeLog "Could not report job failure: $($_.Exception.Message)" "ERROR" }
+            try { Fail-Job -JobId $job.id -OperationType $jobType -ErrorMessage $message } catch { Write-BridgeLog "Could not report job failure: $($_.Exception.Message)" "ERROR" }
             Write-BridgeLog "Job failed: $message" "ERROR"
         }
     }

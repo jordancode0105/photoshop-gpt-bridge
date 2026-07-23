@@ -1117,6 +1117,46 @@ const completionSchema = z
   })
   .strict();
 
+function sanitizeValidationLogText(value) {
+  return String(value || "")
+    .replace(/\bBearer\s+[A-Za-z0-9._~+/=-]+/gi, "Bearer [REDACTED]")
+    .replace(/(?:authorization|x-device-token|device[_-]?token|api[_-]?key|secret)\s*[:=]\s*[^,\s;}]+/gi, "[REDACTED]")
+    .replace(/[A-Za-z]:[\\/][^\r\n,}]*/g, "[local path omitted]")
+    .replace(/\\\\[^\\\r\n]+\\[^\r\n,}]*/g, "[local path omitted]")
+    .replace(/[\u0000-\u001f\u007f]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 300);
+}
+
+function formatValidationIssuePath(basePath, issue) {
+  const segments = [...(issue.path || [])];
+  if (issue.code === "unrecognized_keys" && Array.isArray(issue.keys) && issue.keys.length) {
+    segments.push(issue.keys[0]);
+  }
+
+  let formatted = basePath;
+  for (const segment of segments) {
+    if (Number.isInteger(segment) && segment >= 0) {
+      formatted += `[${segment}]`;
+      continue;
+    }
+    const field = String(segment);
+    formatted += /^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(field) ? `.${field}` : ".[field]";
+  }
+  return formatted;
+}
+
+function logCompletionValidationFailure(job, validationError, basePath) {
+  const issue = validationError.issues[0];
+  const path = issue ? formatValidationIssuePath(basePath, issue) : basePath;
+  const rawMessage = issue?.code === "unrecognized_keys" ? "Unrecognized field" : issue?.message;
+  const message = sanitizeValidationLogText(rawMessage || "Validation failed") || "Validation failed";
+  console.warn(
+    `[completion-validation] jobId=${job.id} jobType=${job.type} path=${path} message=${message}`
+  );
+}
+
 function validateJobFinalizationAccess(req, res, job) {
   if (
     job.executor === POWERSHELL_EXECUTOR &&
@@ -1141,6 +1181,7 @@ app.post("/api/plugin/jobs/:jobId/complete", requirePluginAuth, (req, res) => {
 
   const parsed = completionSchema.safeParse(req.body || {});
   if (!parsed.success) {
+    logCompletionValidationFailure(job, parsed.error, "completion");
     return res.status(400).json({ error: "Invalid completion payload" });
   }
 
@@ -1148,6 +1189,7 @@ app.post("/api/plugin/jobs/:jobId/complete", requirePluginAuth, (req, res) => {
   if (job.type === "listMatchCardAssets") {
     const inventoryResult = matchCardInventoryResultSchema.safeParse(completionResult);
     if (!inventoryResult.success) {
+      logCompletionValidationFailure(job, inventoryResult.error, "result");
       return res.status(400).json({
         error: "Invalid asset inventory result",
         details: inventoryResult.error.flatten(),

@@ -99,6 +99,16 @@ async function failPluginJob(jobId, error, options) {
   return finalizePluginJob(jobId, "fail", { error }, options);
 }
 
+async function waitForServerLog(startIndex, expectedText) {
+  const deadline = Date.now() + 1_000;
+  while (Date.now() < deadline) {
+    const output = serverOutput.slice(startIndex);
+    if (output.includes(expectedText)) return output;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(`Timed out waiting for relay log containing ${expectedText}`);
+}
+
 function validRecolor(overrides = {}) {
   return {
     documentName: "MatchCard.psd",
@@ -340,6 +350,7 @@ test("legacy claimants cannot claim PowerShell match-card jobs", async () => {
   );
   assert.equal(completionWithWrongCapability.response.status, 403);
 
+  const logStart = serverOutput.length;
   const unsafeInventoryResult = await completePluginJob(powershellClaim.body.id, {
     assets: [],
     baleCcConfigured: true,
@@ -350,6 +361,12 @@ test("legacy claimants cannot claim PowerShell match-card jobs", async () => {
   });
   assert.equal(unsafeInventoryResult.response.status, 400);
   assert.equal(unsafeInventoryResult.body.error, "Invalid asset inventory result");
+  const validationLog = await waitForServerLog(logStart, `jobId=${powershellClaim.body.id}`);
+  assert.match(validationLog, /jobType=listMatchCardAssets/);
+  assert.match(validationLog, /path=result\.workingFolder/);
+  assert.match(validationLog, /message=Unrecognized field/);
+  assert.doesNotMatch(validationLog, /C:\\Users\\person\\PhotoshopBridge/);
+  assert.doesNotMatch(validationLog, new RegExp(deviceToken));
 
   const completed = await completePluginJob(powershellClaim.body.id, {
     assets: [
