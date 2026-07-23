@@ -559,11 +559,26 @@ test("Bale import activates its source document and restores its destination", (
     "utf8"
   );
   const helperStart = workerSource.indexOf("function duplicateBaleCcGroupFromSource(");
-  const helperEnd = workerSource.indexOf("\n    function importBaleCcGroup(", helperStart);
+  const helperEnd = workerSource.indexOf(
+    "\n    function placeImportedBaleGroupInsideWrapper(",
+    helperStart
+  );
   assert.notEqual(helperStart, -1);
   assert.notEqual(helperEnd, -1);
   const helperSource = workerSource.slice(helperStart, helperEnd);
 
+  const sourceDocumentValidation = helperSource.indexOf(
+    'baleDomTypename(sourceDocument) !== "Document"'
+  );
+  const sourceGroupValidation = helperSource.indexOf(
+    'baleDomTypename(sourceGroup) !== "LayerSet"'
+  );
+  const destinationDocumentValidation = helperSource.indexOf(
+    'baleDomTypename(destinationDocument) !== "Document"'
+  );
+  const differentDocumentValidation = helperSource.indexOf(
+    "sourceDocument === destinationDocument"
+  );
   const sourceActivation = helperSource.indexOf("app.activeDocument = sourceDocument;");
   const sourceVerification = helperSource.indexOf("app.activeDocument !== sourceDocument");
   const duplicateCall = helperSource.indexOf(
@@ -579,6 +594,11 @@ test("Bale import activates its source document and restores its destination", (
     destinationActivation
   );
 
+  assert.ok(sourceDocumentValidation >= 0);
+  assert.ok(sourceDocumentValidation < sourceGroupValidation);
+  assert.ok(sourceGroupValidation < destinationDocumentValidation);
+  assert.ok(destinationDocumentValidation < differentDocumentValidation);
+  assert.ok(differentDocumentValidation < sourceActivation);
   assert.ok(sourceActivation >= 0);
   assert.ok(sourceActivation < sourceVerification);
   assert.ok(sourceVerification < duplicateCall);
@@ -594,10 +614,65 @@ test("Bale import activates its source document and restores its destination", (
     2
   );
   assert.doesNotMatch(workerSource, /matches\[0\]\.duplicate\(/);
+  assert.match(workerSource, /sourceTypename/);
+  assert.match(workerSource, /destinationTypename/);
+  assert.match(workerSource, /placement/);
+  assert.match(workerSource, /activeDocument/);
   assert.equal(
     (
       workerSource.match(
         /if \(ownedDocument && packageDocument\) try \{ packageDocument\.close\(SaveOptions\.DONOTSAVECHANGES\); \}/g
+      ) || []
+    ).length,
+    2
+  );
+});
+
+test("Bale wrapper nesting uses an ArtLayer anchor instead of LayerSet PLACEINSIDE", () => {
+  const workerSource = readFileSync(
+    path.resolve(process.cwd(), "..", "local-agent", "bridge-worker.jsx"),
+    "utf8"
+  );
+  const helperStart = workerSource.indexOf(
+    "function placeImportedBaleGroupInsideWrapper("
+  );
+  const helperEnd = workerSource.indexOf("\n    function importBaleCcGroup(", helperStart);
+  assert.notEqual(helperStart, -1);
+  assert.notEqual(helperEnd, -1);
+  const helperSource = workerSource.slice(helperStart, helperEnd);
+
+  const destinationActivation = helperSource.indexOf(
+    "app.activeDocument = destinationDocument;"
+  );
+  const anchorCreation = helperSource.indexOf("anchor = wrapper.artLayers.add();");
+  const anchorTypeCheck = helperSource.indexOf(
+    'baleDomTypename(anchor) !== "ArtLayer"'
+  );
+  const relativeMove = helperSource.indexOf(
+    "importedGroup.move(anchor, ElementPlacement.PLACEBEFORE);"
+  );
+  const anchorCleanup = helperSource.indexOf("anchor.remove();");
+  const finallyBlock = helperSource.indexOf("finally");
+  const destinationRestore = helperSource.indexOf(
+    "app.activeDocument = destinationDocument;",
+    finallyBlock
+  );
+
+  assert.ok(destinationActivation >= 0);
+  assert.ok(destinationActivation < anchorCreation);
+  assert.ok(anchorCreation < anchorTypeCheck);
+  assert.ok(anchorTypeCheck < relativeMove);
+  assert.ok(relativeMove < finallyBlock);
+  assert.ok(finallyBlock < anchorCleanup);
+  assert.ok(anchorCleanup < destinationRestore);
+  assert.doesNotMatch(
+    workerSource,
+    /(?:imported|importedGroup)\.move\(wrapper,\s*ElementPlacement\.INSIDE\)/
+  );
+  assert.equal(
+    (
+      workerSource.match(
+        /placeImportedBaleGroupInsideWrapper\(imported, wrapper, targetDocument\)/g
       ) || []
     ).length,
     2

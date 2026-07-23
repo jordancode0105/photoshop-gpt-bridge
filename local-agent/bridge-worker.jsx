@@ -2160,10 +2160,50 @@
             .replace(/\\\\[^\\\r\n]+\\[^\r\n]*/g, "[local path omitted]")
             .replace(/\s+/g, " ");
     }
+    function baleDomTypename(value) {
+        try { return value && value.typename ? String(value.typename) : "(unavailable)"; }
+        catch (_baleTypenameError) { return "(unavailable)"; }
+    }
+    function safeBaleDocumentName(document) {
+        try {
+            if (!document || !document.name) return "(unavailable)";
+            return String(document.name)
+                .replace(/[\x00-\x1f\x7f]/g, "")
+                .replace(/\s+/g, " ")
+                .substring(0, 160);
+        } catch (_baleDocumentNameError) {
+            return "(unavailable)";
+        }
+    }
+    function baleDomOperationContext(operation, sourceObject, destinationObject, placement, sourceDocument, destinationDocument) {
+        return 'operation="' + operation +
+            '"; sourceTypename=' + baleDomTypename(sourceObject) +
+            '; destinationTypename=' + baleDomTypename(destinationObject) +
+            '; placement=' + placement +
+            '; activeDocument="' + safeBaleDocumentName(currentDocumentOrNull()) +
+            '"; sourceDocument="' + safeBaleDocumentName(sourceDocument) +
+            '"; destinationDocument="' + safeBaleDocumentName(destinationDocument) + '"';
+    }
     function duplicateBaleCcGroupFromSource(sourceDocument, sourceGroup, destinationDocument) {
         var imported = null, operationError = null, restorationError = null;
-        var phase = "activating the Bale source document";
+        var phase = "validating the Bale DOM references";
+        var operation = "duplicate Bale group to destination document";
+        var placement = "PLACEATBEGINNING";
         try {
+            if (baleDomTypename(sourceDocument) !== "Document") {
+                throw new Error("The Bale source reference is not a Document.");
+            }
+            if (baleDomTypename(sourceGroup) !== "LayerSet") {
+                throw new Error("The Bale source group reference is not a LayerSet.");
+            }
+            if (baleDomTypename(destinationDocument) !== "Document") {
+                throw new Error("The match-card destination reference is not a Document.");
+            }
+            if (sourceDocument === destinationDocument) {
+                throw new Error("The Bale source and match-card destination must be different documents.");
+            }
+
+            phase = "activating the Bale source document";
             app.activeDocument = sourceDocument;
             if (app.activeDocument !== sourceDocument) {
                 throw new Error("Photoshop did not make the Bale source document active.");
@@ -2171,10 +2211,27 @@
 
             phase = "duplicating the Bale CC group";
             imported = sourceGroup.duplicate(destinationDocument, ElementPlacement.PLACEATBEGINNING);
+            if (baleDomTypename(imported) !== "LayerSet") {
+                throw new Error("Photoshop did not return the duplicated Bale group as a LayerSet.");
+            }
         } catch (error) {
-            operationError = new Error("Bale CC import failed while " + phase + ": " + safeBaleStageErrorMessage(error));
+            operationError = new Error(
+                "Bale CC import failed while " + phase + ": " +
+                safeBaleStageErrorMessage(error) + " " +
+                baleDomOperationContext(
+                    operation,
+                    sourceGroup,
+                    destinationDocument,
+                    placement,
+                    sourceDocument,
+                    destinationDocument
+                )
+            );
         } finally {
             try {
+                if (baleDomTypename(destinationDocument) !== "Document") {
+                    throw new Error("The match-card destination reference is not a Document.");
+                }
                 app.activeDocument = destinationDocument;
                 if (app.activeDocument !== destinationDocument) {
                     throw new Error("Photoshop did not restore the destination match-card document.");
@@ -2182,7 +2239,15 @@
             } catch (restoreError) {
                 restorationError = new Error(
                     "Bale CC import failed while reactivating the destination match-card document: " +
-                    safeBaleStageErrorMessage(restoreError)
+                    safeBaleStageErrorMessage(restoreError) + " " +
+                    baleDomOperationContext(
+                        operation,
+                        sourceGroup,
+                        destinationDocument,
+                        placement,
+                        sourceDocument,
+                        destinationDocument
+                    )
                 );
             }
         }
@@ -2193,6 +2258,109 @@
         }
         if (restorationError) throw restorationError;
         return imported;
+    }
+    function placeImportedBaleGroupInsideWrapper(importedGroup, wrapper, destinationDocument) {
+        var anchor = null, attemptedDestination = wrapper;
+        var operationError = null, cleanupError = null, restorationError = null;
+        var phase = "validating the Bale wrapper DOM references";
+        var operation = "move imported Bale group before temporary wrapper anchor";
+        var placement = "PLACEBEFORE";
+        try {
+            if (baleDomTypename(importedGroup) !== "LayerSet") {
+                throw new Error("The imported Bale group reference is not a LayerSet.");
+            }
+            if (baleDomTypename(wrapper) !== "LayerSet") {
+                throw new Error("The Bale wrapper reference is not a LayerSet.");
+            }
+            if (baleDomTypename(destinationDocument) !== "Document") {
+                throw new Error("The match-card destination reference is not a Document.");
+            }
+
+            app.activeDocument = destinationDocument;
+            if (app.activeDocument !== destinationDocument) {
+                throw new Error("Photoshop did not make the destination match-card document active.");
+            }
+
+            phase = "creating the temporary Bale wrapper anchor";
+            anchor = wrapper.artLayers.add();
+            attemptedDestination = anchor;
+            if (baleDomTypename(anchor) !== "ArtLayer") {
+                throw new Error("Photoshop did not create the Bale wrapper anchor as an ArtLayer.");
+            }
+            anchor.name = "__BALE_CC_IMPORT_ANCHOR__";
+
+            phase = "moving the imported Bale group before the temporary wrapper anchor";
+            importedGroup.move(anchor, ElementPlacement.PLACEBEFORE);
+            if (
+                baleDomTypename(importedGroup.parent) !== "LayerSet" ||
+                safeLayerId(importedGroup.parent) !== safeLayerId(wrapper)
+            ) {
+                throw new Error("Photoshop did not place the imported Bale group inside the Bale wrapper.");
+            }
+        } catch (error) {
+            operationError = new Error(
+                "Bale CC import failed while " + phase + ": " +
+                safeBaleStageErrorMessage(error) + " " +
+                baleDomOperationContext(
+                    operation,
+                    importedGroup,
+                    attemptedDestination,
+                    placement,
+                    destinationDocument,
+                    destinationDocument
+                )
+            );
+        } finally {
+            if (anchor) {
+                try {
+                    anchor.remove();
+                } catch (anchorCleanupError) {
+                    cleanupError = new Error(
+                        "Bale CC import failed while removing the temporary wrapper anchor: " +
+                        safeBaleStageErrorMessage(anchorCleanupError) + " " +
+                        baleDomOperationContext(
+                            "remove temporary Bale wrapper anchor",
+                            anchor,
+                            wrapper,
+                            "REMOVE",
+                            destinationDocument,
+                            destinationDocument
+                        )
+                    );
+                }
+            }
+            try {
+                app.activeDocument = destinationDocument;
+                if (app.activeDocument !== destinationDocument) {
+                    throw new Error("Photoshop did not restore the destination match-card document.");
+                }
+            } catch (restoreError) {
+                restorationError = new Error(
+                    "Bale CC import failed while reactivating the destination match-card document: " +
+                    safeBaleStageErrorMessage(restoreError) + " " +
+                    baleDomOperationContext(
+                        operation,
+                        importedGroup,
+                        attemptedDestination,
+                        placement,
+                        destinationDocument,
+                        destinationDocument
+                    )
+                );
+            }
+        }
+
+        if (operationError) {
+            if (cleanupError) operationError = new Error(operationError.message + " " + cleanupError.message);
+            if (restorationError) operationError = new Error(operationError.message + " " + restorationError.message);
+            throw operationError;
+        }
+        if (cleanupError) {
+            if (restorationError) throw new Error(cleanupError.message + " " + restorationError.message);
+            throw cleanupError;
+        }
+        if (restorationError) throw restorationError;
+        return importedGroup;
     }
     function importBaleCcGroup(input, targetDocument) {
         var baleCc = configuredBaleCc(input, true), folder = matchWorkingFolder(input), packageFile = childFile(folder, baleCc.packageFileName);
@@ -2211,7 +2379,7 @@
             wrapper.name = "00 - BALE CC";
             try { wrapper.blendMode = BlendMode.PASSTHROUGH; } catch (_balePassThroughError) {}
             imported = duplicateBaleCcGroupFromSource(packageDocument, matches[0], targetDocument);
-            imported.move(wrapper, ElementPlacement.INSIDE);
+            placeImportedBaleGroupInsideWrapper(imported, wrapper, targetDocument);
             imported.name = baleCc.groupName;
             return { wrapper: wrapper, sourceGroup: imported };
         } finally {
@@ -2234,7 +2402,7 @@
             findNamedGroups(packageDocument.layers, baleCc.groupName, matches);
             if (matches.length !== 1) throw new Error('Expected exactly one Bale CC group named "' + baleCc.groupName + '"; found ' + matches.length + ".");
             imported = duplicateBaleCcGroupFromSource(packageDocument, matches[0], targetDocument);
-            imported.move(wrapper, ElementPlacement.INSIDE);
+            placeImportedBaleGroupInsideWrapper(imported, wrapper, targetDocument);
             imported.name = baleCc.groupName;
             return imported;
         } finally {
