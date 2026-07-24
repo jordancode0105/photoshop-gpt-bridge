@@ -1233,7 +1233,7 @@ test("premium ECCW source structure uses alpha geometry, polygon masks, editable
     "function calculatePremiumLogoSafeFit("
   );
   const logoFitEnd = workerSource.indexOf(
-    "\n    function resolvePremiumEccwAssetGeometry(",
+    "\n    function readPremiumPlannerPngGeometry(",
     logoFitStart
   );
   const calculateLogoFit = Function(
@@ -1257,7 +1257,7 @@ test("premium ECCW source structure uses alpha geometry, polygon masks, editable
   assert.match(workerSource, /targetHeightOccupancy: 0\.92, centerGap: 33/);
   assert.match(workerSource, /preferredHeightOccupancy: preferredOccupancy/);
   assert.match(workerSource, /occupancyClamped:/);
-  assert.match(workerSource, /requestedGap = Number\(resolved\.composition\.centerGap\)/);
+  assert.match(workerSource, /requestedGap = Number\(composition\.centerGap\)/);
   assert.match(workerSource, /function addPolygonSelectionMask\(/);
   assert.match(workerSource, /document\.selection\.select\(selectionPoints\)/);
   assert.match(workerSource, /function applyMandatoryPremiumPanelMask\(/);
@@ -1322,6 +1322,272 @@ test("premium ECCW source structure uses alpha geometry, polygon masks, editable
   assert.doesNotMatch(premiumResolverSource, /dateDefaults|FIRST TO THREE RULES/);
   assert.match(premiumResolverSource, /mode: "logo-only"/);
   assert.match(premiumResolverSource, /stroke: false/);
+});
+
+test("premium read-only planning uses plain metadata descriptors and leaves Photoshop runtime work pending", () => {
+  const workerSource = readFileSync(
+    path.resolve(process.cwd(), "..", "local-agent", "bridge-worker.jsx"),
+    "utf8"
+  );
+  const planStart = workerSource.indexOf("function planMatchCard(");
+  const planEnd = workerSource.indexOf(
+    "\n    var MATCH_ASSET_LAYER_NAMES",
+    planStart
+  );
+  const planSource = workerSource.slice(planStart, planEnd);
+  assert.match(planSource, /preflightPremiumPlanMatchCard\(input, payload\)/);
+  assert.match(planSource, /resolvePremiumEccwPlanningGeometry\(/);
+  assert.match(planSource, /performsPhotoshopWrite: false/);
+  assert.match(planSource, /runtimePendingMeasurements:/);
+  assert.match(planSource, /intentionalOmissions:/);
+  assert.doesNotMatch(planSource, /resolvePremiumEccwAssetGeometry\(/);
+  assert.doesNotMatch(planSource, /assertEccwCompetitorVisible\(/);
+  assert.doesNotMatch(planSource, /inspectEccwLogoSourceAlphaGeometry\(/);
+  assert.doesNotMatch(planSource, /activeLayerTransparencyBounds\(/);
+  assert.doesNotMatch(planSource, /smartObjectMore|smartObjectPlacementTransform/);
+  assert.doesNotMatch(planSource, /executeAction|executeActionGet/);
+
+  const metadataStart = workerSource.indexOf(
+    "function readPremiumPlannerPngGeometry("
+  );
+  const metadataEnd = workerSource.indexOf(
+    "\n    function premiumRuntimeSourceGeometry(",
+    metadataStart
+  );
+  const metadataSource = workerSource.slice(metadataStart, metadataEnd);
+  assert.match(metadataSource, /png-ihdr-document-bounds/);
+  assert.match(metadataSource, /runtimeAlphaMeasurementPending: true/);
+  assert.match(
+    metadataSource,
+    /Premium planner cannot resolve source alpha geometry for/
+  );
+  assert.doesNotMatch(metadataSource, /app\.|ArtLayer|Smart Object/);
+  assert.doesNotMatch(
+    metadataSource,
+    /ActionDescriptor|ActionReference|executeAction|smartObjectMore/
+  );
+  const readPlanningGeometry = Function(
+    "fileExtension",
+    "safeBaleStageErrorMessage",
+    `"use strict"; return (${metadataSource.trim()});`
+  )(
+    (name) => name.slice(name.lastIndexOf(".")).toLowerCase(),
+    (error) => String(error?.message || error)
+  );
+  const pngHeader = Buffer.alloc(24);
+  Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]).copy(pngHeader, 0);
+  pngHeader.write("IHDR", 12, "ascii");
+  pngHeader.writeUInt32BE(1536, 16);
+  pngHeader.writeUInt32BE(1024, 20);
+  const mockPng = {
+    exists: true,
+    name: "JordanSinner.png",
+    encoding: "",
+    open: () => true,
+    read: () => pngHeader.toString("latin1"),
+    close: () => true,
+  };
+  const pngGeometry = readPlanningGeometry(mockPng, "competitorLeft");
+  assert.equal(pngGeometry.sourceFullWidth, 1536);
+  assert.equal(pngGeometry.sourceFullHeight, 1024);
+  assert.equal(pngGeometry.alphaBoundsMeasured, false);
+  assert.equal(pngGeometry.runtimeAlphaMeasurementPending, true);
+  assert.throws(
+    () =>
+      readPlanningGeometry(
+        {
+          ...mockPng,
+          read: () => Buffer.alloc(24).toString("latin1"),
+        },
+        "competitorLeft"
+      ),
+    /Premium planner cannot resolve source alpha geometry for competitorLeft/
+  );
+
+  const competitorStart = workerSource.indexOf(
+    "function resolvePremiumCompetitorGeometryDescriptor("
+  );
+  const competitorEnd = workerSource.indexOf(
+    "\n    function resolvePremiumLogoGeometryDescriptor(",
+    competitorStart
+  );
+  const geometryBoundsStart = workerSource.indexOf(
+    "function premiumGeometryBounds("
+  );
+  const geometryBoundsEnd = workerSource.indexOf(
+    "\n    function resolvedPremiumEccwArtDirection(",
+    geometryBoundsStart
+  );
+  const competitorResolver = Function(
+    "premiumGeometryBounds",
+    "cloneJsonValue",
+    `"use strict"; return (${workerSource
+      .slice(competitorStart, competitorEnd)
+      .trim()});`
+  )(
+    Function(
+      `"use strict"; return (${workerSource
+        .slice(geometryBoundsStart, geometryBoundsEnd)
+        .trim()});`
+    )(),
+    (value) => structuredClone(value)
+  );
+  const planningSource = {
+    sourceFullWidth: 1536,
+    sourceFullHeight: 1536,
+    planningVisibleBounds: { left: 0, top: 0, right: 1536, bottom: 1536 },
+    planningVisibleWidth: 1536,
+    planningVisibleHeight: 1536,
+    geometryBasis: "png-ihdr-document-bounds",
+    alphaBoundsMeasured: false,
+    runtimeAlphaMeasurementPending: true,
+  };
+  const composition = { targetHeightOccupancy: 0.92, centerGap: 33 };
+  const leftDirection = {
+    scale: 1.02,
+    xOffset: 0,
+    yOffset: 0,
+    headTargetY: 170,
+    panelGeometry: {
+      dividerEdge: 942,
+      nameplateTop: 850,
+      points: [
+        [139, 174],
+        [882, 174],
+        [928, 220],
+        [928, 846],
+        [170, 846],
+        [170, 300],
+        [139, 266],
+      ],
+    },
+  };
+  const rightDirection = {
+    ...structuredClone(leftDirection),
+    scale: 0.98,
+    panelGeometry: {
+      dividerEdge: 978,
+      nameplateTop: 850,
+      points: [
+        [992, 220],
+        [1038, 174],
+        [1781, 174],
+        [1781, 266],
+        [1750, 300],
+        [1750, 846],
+        [992, 846],
+      ],
+    },
+  };
+  competitorResolver(
+    "competitorLeft",
+    leftDirection,
+    composition,
+    planningSource,
+    false
+  );
+  competitorResolver(
+    "competitorRight",
+    rightDirection,
+    composition,
+    planningSource,
+    false
+  );
+  for (const direction of [leftDirection, rightDirection]) {
+    assert.equal(
+      direction.resolvedPlacement.sourceGeometry.geometryBasis,
+      "png-ihdr-document-bounds"
+    );
+    assert.equal(
+      direction.resolvedPlacement.runtimePlacementMeasurementPending,
+      true
+    );
+    assert.equal(
+      direction.resolvedPlacement.runtimePanelMaskVerificationPending,
+      true
+    );
+    assert.ok(direction.resolvedPlacement.plannedAlphaVisibleBounds);
+    assert.equal(direction.resolvedPlacement.visibleBounds, undefined);
+    assert.ok(
+      direction.resolvedPlacement.resolvedHeightOccupancy >= 0.9 &&
+        direction.resolvedPlacement.resolvedHeightOccupancy <= 0.94
+    );
+    assert.ok(
+      direction.resolvedPlacement.resolvedCenterGap >= 28 &&
+      direction.resolvedPlacement.resolvedCenterGap <= 38
+    );
+  }
+  const runtimeDirection = structuredClone(leftDirection);
+  delete runtimeDirection.resolvedPlacement;
+  competitorResolver(
+    "competitorLeft",
+    runtimeDirection,
+    composition,
+    {
+      ...planningSource,
+      geometryBasis: "photoshop-source-alpha-measurement",
+      alphaBoundsMeasured: true,
+      runtimeAlphaMeasurementPending: false,
+    },
+    true
+  );
+  assert.ok(runtimeDirection.resolvedPlacement.visibleBounds);
+  assert.ok(runtimeDirection.resolvedPlacement.sourceAlphaBounds);
+  assert.ok(runtimeDirection.resolvedPlacement.appliedScaleFactor > 0);
+  assert.equal(
+    runtimeDirection.resolvedPlacement.runtimePlacementMeasurementPending,
+    false
+  );
+
+  const logoFitStart = workerSource.indexOf(
+    "function calculatePremiumLogoSafeFit("
+  );
+  const logoFitEnd = workerSource.indexOf(
+    "\n    function readPremiumPlannerPngGeometry(",
+    logoFitStart
+  );
+  const calculateLogoFit = Function(
+    `"use strict"; return (${workerSource
+      .slice(logoFitStart, logoFitEnd)
+      .trim()});`
+  )();
+  const logoStart = workerSource.indexOf(
+    "function resolvePremiumLogoGeometryDescriptor("
+  );
+  const logoEnd = workerSource.indexOf(
+    "\n    function resolvePremiumEccwGeometryDescriptors(",
+    logoStart
+  );
+  const resolveLogo = Function(
+    "calculatePremiumLogoSafeFit",
+    "cloneJsonValue",
+    `"use strict"; return (${workerSource.slice(logoStart, logoEnd).trim()});`
+  )(calculateLogoFit, (value) => structuredClone(value));
+  const logo = {
+    fitMode: "largest-safe-fit",
+    visibleWidth: null,
+    safePadding: 14,
+    xOffset: 0,
+    yOffset: 0,
+  };
+  resolveLogo(logo, pngGeometry, false);
+  assert.equal(logo.runtimeAlphaMeasurementPending, true);
+  assert.equal(logo.runtimePlacementVerificationPending, true);
+  assert.equal(logo.sourceGeometry.geometryBasis, "png-ihdr-document-bounds");
+  assert.ok(logo.plannedVisibleBounds);
+  assert.equal(logo.resolvedVisibleBounds, undefined);
+  assert.ok(logo.visibleWidth <= 452);
+  assert.ok(logo.visibleHeight <= 242);
+  const runtimeLogo = {
+    fitMode: "largest-safe-fit",
+    visibleWidth: null,
+    safePadding: 14,
+    xOffset: 0,
+    yOffset: 0,
+  };
+  resolveLogo(runtimeLogo, planningSource, true);
+  assert.ok(runtimeLogo.resolvedVisibleBounds);
+  assert.equal(runtimeLogo.runtimeAlphaMeasurementPending, false);
 });
 
 test("ECCW worker preset preserves the template and validates deterministic placement", () => {

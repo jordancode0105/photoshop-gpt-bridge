@@ -2320,6 +2320,46 @@
             baleCc: baleStatus
         };
     }
+    function preflightPremiumPlanMatchCard(input, payload) {
+        // Planning deliberately validates only trusted configuration, local
+        // file existence, and reserved outputs. Bale group ownership remains
+        // a Photoshop-runtime check so this path never opens a document.
+        var folder = matchWorkingFolder(input), missing = [], existingOutputs = [], requiredFiles = [];
+        requiredFiles.push(payload.templateBackground.fileName);
+        var assetKeys = ownKeys(payload.assets), i;
+        for (i = 0; i < assetKeys.length; i++) requiredFiles.push(payload.assets[assetKeys[i]]);
+        var bale = configuredBaleCc(input, false);
+        if (bale.configured) requiredFiles.push(bale.packageFileName);
+        for (i = 0; i < requiredFiles.length; i++) {
+            if (!childFile(folder, requiredFiles[i]).exists) pushUniqueString(missing, requiredFiles[i]);
+        }
+        var outputs = [payload.outputPsdName, payload.outputPreviewName, payload.outputManifestName];
+        for (i = 0; i < outputs.length; i++) {
+            if (childFile(folder, outputs[i]).exists) existingOutputs.push(outputs[i]);
+        }
+        var balePackageExists = bale.configured && childFile(folder, bale.packageFileName).exists;
+        var baleReady = bale.configured && balePackageExists;
+        return {
+            ready: missing.length === 0 && existingOutputs.length === 0 && baleReady,
+            missingFiles: missing,
+            existingOutputs: existingOutputs,
+            baleCc: {
+                configured: bale.configured,
+                packageFileName: bale.packageFileName,
+                groupName: bale.groupName,
+                packageExists: balePackageExists,
+                matchingGroupCount: null,
+                available: baleReady,
+                issue: baleReady ? null : (
+                    bale.configured ?
+                        "Configured Bale CC package is missing." :
+                        "BALE_CC_PACKAGE_FILE and BALE_CC_GROUP_NAME are not fully configured in the local agent."
+                ),
+                validationBasis: "file-existence-only",
+                runtimeGroupValidationPending: true
+            }
+        };
+    }
     function plannedMatchCardGroups(layoutPreset) {
         if (layoutPreset === ECCW_PREMIUM_LAYOUT_PRESET) {
             return [
@@ -2370,15 +2410,23 @@
     }
     function planMatchCard(input) {
         var payload = validateCreateMatchCardPayload(input.payload || {});
-        var preflight = preflightCreateMatchCard(input, payload);
         var isEccw = isEccwLayoutPreset(payload.style.layoutPreset);
         var isPremium = isPremiumEccwLayoutPreset(payload.style.layoutPreset);
+        var preflight = isPremium ?
+            preflightPremiumPlanMatchCard(input, payload) :
+            preflightCreateMatchCard(input, payload);
         var requestedArtDirection = isEccw && own(payload, "artDirection") ? cloneJsonValue(payload.artDirection) : null;
         var resolvedArtDirection = isPremium ?
             resolvedPremiumEccwArtDirection(payload.artDirection || {}) :
             (isEccw ? resolvedEccwArtDirection(payload.artDirection || {}) : null);
         if (isPremium && preflight.missingFiles.length === 0) {
-            resolvedArtDirection = resolvePremiumEccwAssetGeometry(matchWorkingFolder(input), payload, resolvedArtDirection);
+            resolvedArtDirection = resolvePremiumEccwPlanningGeometry(
+                matchWorkingFolder(input),
+                payload,
+                resolvedArtDirection
+            );
+            resolvedArtDirection.panelMasks.runtimeCreationPending = true;
+            resolvedArtDirection.panelMasks.runtimeVerificationPending = true;
         }
         var plannedRequestedArtDirection = resolvedArtDirection ? cloneJsonValue(requestedArtDirection || {}) : null;
         if (plannedRequestedArtDirection) {
@@ -2406,12 +2454,34 @@
             textMappings: textMappings,
             assetMappings: payload.assets,
             templateBackground: payload.templateBackground,
+            layoutPreset: payload.style.layoutPreset,
+            displayNameMappings: cloneJsonValue(payload.text),
             artDirection: resolvedArtDirection ? {
                 requested: plannedRequestedArtDirection,
                 resolved: resolvedArtDirection,
                 vsFill: buildEccwVsFillDiagnostics(requestedArtDirection || {}, resolvedArtDirection, null),
                 premium: isPremium,
-                photoshopRuntimeMeasurementsPending: isPremium
+                intentionalOmissions: isPremium ? {
+                    date: true,
+                    topStipulation: true
+                } : null,
+                photoshopRuntimeMeasurementsPending: isPremium,
+                runtimePendingMeasurements: isPremium ? [
+                    "competitorLeft.sourceAlphaVisibleBounds",
+                    "competitorLeft.finalPlacedAlphaVisibleBounds",
+                    "competitorLeft.panelMaskCreationAndVerification",
+                    "competitorRight.sourceAlphaVisibleBounds",
+                    "competitorRight.finalPlacedAlphaVisibleBounds",
+                    "competitorRight.panelMaskCreationAndVerification",
+                    "showLogo.sourceAlphaVisibleBounds",
+                    "showLogo.finalPlacedAlphaVisibleWidthAndSafeAreaVerification",
+                    "competitorLeft.nonDestructiveEffects",
+                    "competitorRight.nonDestructiveEffects",
+                    "liveText.finalGlyphBoundsAndColorReadback",
+                    "vs.finalOpticalCentering",
+                    "globalFinish.runtimeLayerAndColorVerification",
+                    "baleCc.groupOwnershipValidation"
+                ] : []
             } : null,
             outputPsdName: payload.outputPsdName,
             outputPreviewName: payload.outputPreviewName,
@@ -3066,23 +3136,84 @@
                 resolvedHeight <= safeBounds.bottom - safeBounds.top + 0.0001
         };
     }
-    function resolvePremiumEccwAssetGeometry(folder, payload, resolved) {
-        var roles = ["competitorLeft", "competitorRight"];
-        for (var i = 0; i < roles.length; i++) {
-            var role = roles[i], direction = resolved[role];
-            var source = inspectEccwLogoSourceAlphaGeometry(childFile(folder, payload.assets[role]), role);
+    function readPremiumPlannerPngGeometry(file, role) {
+        // PNG IHDR dimensions are deterministic file metadata. They are a
+        // planning approximation, never a claim about alpha-visible pixels.
+        var opened = false, bytes = "";
+        try {
+            if (!file || !file.exists || fileExtension(file.name) !== ".png") {
+                throw new Error("a readable local PNG is required");
+            }
+            file.encoding = "BINARY";
+            opened = file.open("r");
+            if (!opened) throw new Error(file.error || "the PNG could not be opened");
+            bytes = file.read(24);
+            if (!bytes || bytes.length < 24) throw new Error("the PNG header is incomplete");
+            var signature = [137, 80, 78, 71, 13, 10, 26, 10];
+            for (var signatureIndex = 0; signatureIndex < signature.length; signatureIndex++) {
+                if ((bytes.charCodeAt(signatureIndex) & 255) !== signature[signatureIndex]) {
+                    throw new Error("the file does not have a valid PNG signature");
+                }
+            }
+            if (bytes.substring(12, 16) !== "IHDR") throw new Error("the PNG IHDR chunk is missing");
+            function uint32(offset) {
+                return (
+                    ((bytes.charCodeAt(offset) & 255) * 16777216) +
+                    ((bytes.charCodeAt(offset + 1) & 255) * 65536) +
+                    ((bytes.charCodeAt(offset + 2) & 255) * 256) +
+                    (bytes.charCodeAt(offset + 3) & 255)
+                );
+            }
+            var width = uint32(16), height = uint32(20);
+            if (!isFinite(width) || width <= 0 || !isFinite(height) || height <= 0) {
+                throw new Error("the PNG document dimensions are invalid");
+            }
+            return {
+                sourceFullWidth: width,
+                sourceFullHeight: height,
+                planningVisibleBounds: { left: 0, top: 0, right: width, bottom: height },
+                planningVisibleWidth: width,
+                planningVisibleHeight: height,
+                geometryBasis: "png-ihdr-document-bounds",
+                alphaBoundsMeasured: false,
+                runtimeAlphaMeasurementPending: true
+            };
+        } catch (error) {
+            throw new Error(
+                "Premium planner cannot resolve source alpha geometry for " + role +
+                ": " + safeBaleStageErrorMessage(error)
+            );
+        } finally {
+            if (opened) try { file.close(); } catch (_premiumPlannerPngCloseError) {}
+        }
+    }
+    function premiumRuntimeSourceGeometry(source) {
+        // Only the create/update runtime may adapt measured Photoshop alpha
+        // geometry into a descriptor marked as measured.
+        return {
+            sourceFullWidth: Number(source.sourceFullWidth),
+            sourceFullHeight: Number(source.sourceFullHeight),
+            planningVisibleBounds: cloneJsonValue(source.sourceAlphaBounds),
+            planningVisibleWidth: Number(source.sourceAlphaVisibleWidth),
+            planningVisibleHeight: Number(source.sourceAlphaVisibleHeight),
+            geometryBasis: "photoshop-source-alpha-measurement",
+            alphaBoundsMeasured: true,
+            runtimeAlphaMeasurementPending: false
+        };
+    }
+    function resolvePremiumCompetitorGeometryDescriptor(role, direction, composition, source, runtimeMeasured) {
             var panelBounds = premiumGeometryBounds(direction.panelGeometry);
             // Treat scale as an art-direction preference within the mandatory
             // panel-occupancy band instead of letting it push the silhouette
             // outside the validated 90..94 percent composition.
             var preferredOccupancy =
-                Number(resolved.composition.targetHeightOccupancy) +
+                Number(composition.targetHeightOccupancy) +
                 ((Number(direction.scale) - 1) * 0.2);
             var resolvedOccupancy = Math.max(0.9, Math.min(0.94, preferredOccupancy));
             var targetHeight = panelBounds.height * resolvedOccupancy;
-            var appliedScaleFactor = targetHeight / Number(source.sourceAlphaVisibleHeight);
-            var targetWidth = Number(source.sourceAlphaVisibleWidth) * appliedScaleFactor;
-            var requestedGap = Number(resolved.composition.centerGap);
+            var plannedScaleFactor = targetHeight / Number(source.planningVisibleHeight);
+            var targetWidth = Number(source.planningVisibleWidth) * plannedScaleFactor;
+            var requestedGap = Number(composition.centerGap);
             var centerX = role === "competitorLeft" ?
                 Number(direction.panelGeometry.dividerEdge) - requestedGap - (targetWidth / 2) :
                 Number(direction.panelGeometry.dividerEdge) + requestedGap + (targetWidth / 2);
@@ -3104,38 +3235,52 @@
                     actualGap + "px. Adjust xOffset or composition.centerGap."
                 );
             }
-            direction.resolvedPlacement = {
-                sourceFullWidth: source.sourceFullWidth,
-                sourceFullHeight: source.sourceFullHeight,
-                sourceAlphaBounds: cloneJsonValue(source.sourceAlphaBounds),
-                sourceAlphaVisibleWidth: source.sourceAlphaVisibleWidth,
-                sourceAlphaVisibleHeight: source.sourceAlphaVisibleHeight,
-                appliedScaleFactor: appliedScaleFactor,
-                appliedScalePercent: appliedScaleFactor * 100,
+            var plannedBounds = {
+                left: centerX - targetWidth / 2,
+                top: desiredTop,
+                right: centerX + targetWidth / 2,
+                bottom: desiredTop + targetHeight
+            };
+            var descriptor = {
+                sourceGeometry: cloneJsonValue(source),
+                plannedScaleFactor: plannedScaleFactor,
+                plannedScalePercent: plannedScaleFactor * 100,
                 centerX: centerX,
                 centerY: centerY,
-                visibleBounds: {
-                    left: centerX - targetWidth / 2,
-                    top: desiredTop,
-                    right: centerX + targetWidth / 2,
-                    bottom: desiredTop + targetHeight
-                },
-                targetHeightOccupancy: Number(resolved.composition.targetHeightOccupancy),
+                plannedAlphaVisibleBounds: cloneJsonValue(plannedBounds),
+                targetHeightOccupancy: Number(composition.targetHeightOccupancy),
                 preferredHeightOccupancy: preferredOccupancy,
                 resolvedHeightOccupancy: resolvedOccupancy,
                 occupancyClamped: Math.abs(preferredOccupancy - resolvedOccupancy) > 0.0001,
                 requestedCenterGap: requestedGap,
                 resolvedCenterGap: actualGap,
-                panelBounds: cloneJsonValue(panelBounds)
+                panelBounds: cloneJsonValue(panelBounds),
+                runtimePlacementMeasurementPending: !runtimeMeasured,
+                runtimePanelMaskCreationPending: !runtimeMeasured,
+                runtimePanelMaskVerificationPending: !runtimeMeasured
             };
-        }
-        var logo = resolved.topPlate.logo;
-        var logoSource = inspectEccwLogoSourceAlphaGeometry(childFile(folder, payload.assets.showLogo), "showLogo");
+            if (runtimeMeasured) {
+                descriptor.sourceFullWidth = source.sourceFullWidth;
+                descriptor.sourceFullHeight = source.sourceFullHeight;
+                descriptor.sourceAlphaBounds = cloneJsonValue(source.planningVisibleBounds);
+                descriptor.sourceAlphaVisibleWidth = source.planningVisibleWidth;
+                descriptor.sourceAlphaVisibleHeight = source.planningVisibleHeight;
+                descriptor.appliedScaleFactor = plannedScaleFactor;
+                descriptor.appliedScalePercent = plannedScaleFactor * 100;
+                descriptor.visibleBounds = cloneJsonValue(plannedBounds);
+                descriptor.runtimePlacementMeasurementPending = false;
+                descriptor.runtimePanelMaskCreationPending = false;
+                descriptor.runtimePanelMaskVerificationPending = false;
+            }
+            direction.resolvedPlacement = descriptor;
+            return direction;
+    }
+    function resolvePremiumLogoGeometryDescriptor(logo, source, runtimeMeasured) {
         var safePadding = Number(logo.safePadding);
         var requestedExplicitWidth = logo.fitMode === "explicit-width" && isFinite(Number(logo.visibleWidth));
         var safeFit = calculatePremiumLogoSafeFit(
-            logoSource.sourceAlphaVisibleWidth,
-            logoSource.sourceAlphaVisibleHeight,
+            source.planningVisibleWidth,
+            source.planningVisibleHeight,
             safePadding,
             requestedExplicitWidth ? Number(logo.visibleWidth) : null
         );
@@ -3151,29 +3296,76 @@
         logo.centerX = (safeFit.safeBounds.left + safeFit.safeBounds.right) / 2 + Number(logo.xOffset);
         logo.centerY = (safeFit.safeBounds.top + safeFit.safeBounds.bottom) / 2 + Number(logo.yOffset);
         logo.safeBounds = safeFit.safeBounds;
-        logo.resolvedVisibleBounds = {
+        var plannedVisibleBounds = {
             left: logo.centerX - safeFit.visibleWidth / 2,
             top: logo.centerY - safeFit.visibleHeight / 2,
             right: logo.centerX + safeFit.visibleWidth / 2,
             bottom: logo.centerY + safeFit.visibleHeight / 2
         };
         if (
-            logo.resolvedVisibleBounds.left < safeFit.safeBounds.left - 0.0001 ||
-            logo.resolvedVisibleBounds.top < safeFit.safeBounds.top - 0.0001 ||
-            logo.resolvedVisibleBounds.right > safeFit.safeBounds.right + 0.0001 ||
-            logo.resolvedVisibleBounds.bottom > safeFit.safeBounds.bottom + 0.0001
+            plannedVisibleBounds.left < safeFit.safeBounds.left - 0.0001 ||
+            plannedVisibleBounds.top < safeFit.safeBounds.top - 0.0001 ||
+            plannedVisibleBounds.right > safeFit.safeBounds.right + 0.0001 ||
+            plannedVisibleBounds.bottom > safeFit.safeBounds.bottom + 0.0001
         ) {
             throw new Error(
                 "Premium showLogo offsets leave the top-plate safe area: safe=[" +
                 [safeFit.safeBounds.left, safeFit.safeBounds.top, safeFit.safeBounds.right, safeFit.safeBounds.bottom].join(",") +
                 "] resolved=[" +
-                [logo.resolvedVisibleBounds.left, logo.resolvedVisibleBounds.top, logo.resolvedVisibleBounds.right, logo.resolvedVisibleBounds.bottom].join(",") + "]."
+                [plannedVisibleBounds.left, plannedVisibleBounds.top, plannedVisibleBounds.right, plannedVisibleBounds.bottom].join(",") + "]."
             );
         }
-        logo.sourceGeometry = cloneJsonValue(logoSource);
+        logo.sourceGeometry = cloneJsonValue(source);
         logo.fitResolution = safeFit.fitResolution;
         logo.largestSafeVisibleWidth = safeFit.largestSafeVisibleWidth;
+        logo.plannedVisibleBounds = cloneJsonValue(plannedVisibleBounds);
+        if (runtimeMeasured) logo.resolvedVisibleBounds = cloneJsonValue(plannedVisibleBounds);
+        logo.runtimeAlphaMeasurementPending = !runtimeMeasured;
+        logo.runtimePlacementVerificationPending = !runtimeMeasured;
+        return logo;
+    }
+    function resolvePremiumEccwGeometryDescriptors(resolved, sources, runtimeMeasured) {
+        var roles = ["competitorLeft", "competitorRight"];
+        for (var i = 0; i < roles.length; i++) {
+            var role = roles[i];
+            resolvePremiumCompetitorGeometryDescriptor(
+                role,
+                resolved[role],
+                resolved.composition,
+                sources[role],
+                runtimeMeasured
+            );
+        }
+        resolvePremiumLogoGeometryDescriptor(
+            resolved.topPlate.logo,
+            sources.showLogo,
+            runtimeMeasured
+        );
         return resolved;
+    }
+    function resolvePremiumEccwPlanningGeometry(folder, payload, resolved) {
+        var sources = {}, roles = ["competitorLeft", "competitorRight", "showLogo"];
+        for (var i = 0; i < roles.length; i++) {
+            var role = roles[i];
+            sources[role] = readPremiumPlannerPngGeometry(
+                childFile(folder, payload.assets[role]),
+                role
+            );
+        }
+        return resolvePremiumEccwGeometryDescriptors(resolved, sources, false);
+    }
+    function resolvePremiumEccwAssetGeometry(folder, payload, resolved) {
+        var sources = {}, roles = ["competitorLeft", "competitorRight", "showLogo"];
+        for (var i = 0; i < roles.length; i++) {
+            var role = roles[i];
+            sources[role] = premiumRuntimeSourceGeometry(
+                inspectEccwLogoSourceAlphaGeometry(
+                    childFile(folder, payload.assets[role]),
+                    role
+                )
+            );
+        }
+        return resolvePremiumEccwGeometryDescriptors(resolved, sources, true);
     }
     function calculateEccwLogoScaleDiagnostics(sourceFullWidth, sourceAlphaVisibleWidth, requestedAlphaVisibleWidth, initialPlacedAlphaVisibleWidth, initialPlacementTransform, measuredWidthAfterNominalScale, correctionFactors, finalMeasuredAlphaVisibleWidth, verificationTolerance) {
         var values = [sourceFullWidth, sourceAlphaVisibleWidth, requestedAlphaVisibleWidth, initialPlacedAlphaVisibleWidth, measuredWidthAfterNominalScale, finalMeasuredAlphaVisibleWidth, verificationTolerance];
