@@ -1033,6 +1033,310 @@ components:
         vs:
           $ref: "#/components/schemas/EccwVsArtDirection"
 
+    PremiumEccwRed:
+      type: object
+      additionalProperties: false
+      required: [red, green, blue]
+      properties:
+        red:
+          type: integer
+          const: 198
+        green:
+          type: integer
+          const: 24
+        blue:
+          type: integer
+          const: 32
+
+    PremiumEccwSoftWhite:
+      type: object
+      additionalProperties: false
+      required: [red, green, blue]
+      description: Neutral soft white; relay additionally enforces channel neutrality within 3 levels.
+      properties:
+        red:
+          type: integer
+          minimum: 225
+          maximum: 245
+        green:
+          type: integer
+          minimum: 225
+          maximum: 245
+        blue:
+          type: integer
+          minimum: 225
+          maximum: 245
+
+    PremiumEccwEffect:
+      type: object
+      additionalProperties: false
+      properties:
+        enabled:
+          type: boolean
+        opacity:
+          type: number
+          minimum: 0
+          maximum: 60
+        blur:
+          type: number
+          minimum: 0
+          maximum: 40
+        distance:
+          type: number
+          minimum: 0
+          maximum: 40
+
+    PremiumEccwCompetitor:
+      type: object
+      additionalProperties: false
+      properties:
+        scale:
+          type: number
+          minimum: 0.9
+          maximum: 1.1
+        xOffset:
+          type: number
+          minimum: -120
+          maximum: 120
+        yOffset:
+          type: number
+          minimum: -100
+          maximum: 100
+        headTargetY:
+          type: number
+          minimum: 100
+          maximum: 260
+        depthShadow:
+          $ref: "#/components/schemas/PremiumEccwEffect"
+        centerRim:
+          $ref: "#/components/schemas/PremiumEccwEffect"
+        outerRim:
+          $ref: "#/components/schemas/PremiumEccwEffect"
+        gradeStrength:
+          type: number
+          minimum: 0
+          maximum: 100
+        atmosphereOpacity:
+          type: number
+          minimum: 0
+          maximum: 20
+
+    PremiumEccwArtDirection:
+      type: object
+      additionalProperties: false
+      description: Optional high-level controls for the opt-in eccw-two-competitor-panel-premium v15 composition.
+      properties:
+        competitorLeft:
+          $ref: "#/components/schemas/PremiumEccwCompetitor"
+        competitorRight:
+          $ref: "#/components/schemas/PremiumEccwCompetitor"
+        panelMasks:
+          type: object
+          additionalProperties: false
+          properties:
+            enabled:
+              type: boolean
+              const: true
+            inset:
+              type: number
+              minimum: 3
+              maximum: 5
+        composition:
+          type: object
+          additionalProperties: false
+          properties:
+            targetHeightOccupancy:
+              type: number
+              minimum: 0.9
+              maximum: 0.94
+            centerGap:
+              type: number
+              minimum: 28
+              maximum: 38
+        nameplates:
+          type: object
+          additionalProperties: false
+          properties:
+            targetWidthOccupancy:
+              type: number
+              minimum: 0.5
+              maximum: 0.95
+            targetHeightOccupancy:
+              type: number
+              minimum: 0.3
+              maximum: 0.9
+            minimumHorizontalPadding:
+              type: number
+              minimum: 20
+              maximum: 120
+            maximumFontSize:
+              type: number
+              minimum: 36
+              maximum: 120
+            minimumFontSize:
+              type: number
+              minimum: 18
+              maximum: 96
+            tracking:
+              type: number
+              minimum: -100
+              maximum: 300
+            fill:
+              $ref: "#/components/schemas/PremiumEccwRed"
+            opacity:
+              type: number
+              minimum: 88
+              maximum: 92
+            textureReveal:
+              type: number
+              minimum: 10
+              maximum: 18
+        topPlate:
+          type: object
+          additionalProperties: false
+          properties:
+            mode:
+              type: string
+              const: logo-only
+            logo:
+              type: object
+              additionalProperties: false
+              properties:
+                fitMode:
+                  type: string
+                  enum: [largest-safe-fit, explicit-width]
+                visibleWidth:
+                  type: number
+                  minimum: 160
+                  maximum: 452
+                safePadding:
+                  type: number
+                  minimum: 12
+                  maximum: 16
+                xOffset:
+                  type: number
+                  minimum: -150
+                  maximum: 150
+                yOffset:
+                  type: number
+                  minimum: -150
+                  maximum: 150
+        vs:
+          type: object
+          additionalProperties: false
+          properties:
+            fontSize:
+              type: number
+              minimum: 40
+              maximum: 100
+            xOffset:
+              type: number
+              minimum: -150
+              maximum: 150
+            yOffset:
+              type: number
+              minimum: -150
+              maximum: 150
+            fill:
+              $ref: "#/components/schemas/PremiumEccwRed"
+            opacity:
+              type: number
+              minimum: 88
+              maximum: 92
+            textureReveal:
+              type: number
+              minimum: 10
+              maximum: 18
+            stroke:
+              type: boolean
+              const: false
+            centeringTolerance:
+              type: number
+              minimum: 1
+              maximum: 3
+        lowerCenter:
+          type: object
+          additionalProperties: false
+          properties:
+            enabled:
+              type: boolean
+            text:
+              type: string
+              minLength: 1
+              maxLength: 80
+              pattern: '^[^\x00]*$'
+            fontSize:
+              type: number
+              minimum: 22
+              maximum: 26
+            tracking:
+              type: number
+              minimum: 50
+              maximum: 300
+            fill:
+              $ref: "#/components/schemas/PremiumEccwSoftWhite"
+            opacity:
+              type: number
+              minimum: 80
+              maximum: 100
+            microplate:
+              type: boolean
+        renderGrade:
+          type: object
+          additionalProperties: false
+          description: Shared non-destructive render-grade controls, scaled independently by each competitor's gradeStrength.
+          properties:
+            blackDepth:
+              type: number
+              minimum: 0
+              maximum: 20
+            highlightRecovery:
+              type: number
+              minimum: 0
+              maximum: 20
+            contrast:
+              type: number
+              minimum: 0
+              maximum: 20
+            saturation:
+              type: number
+              minimum: -20
+              maximum: 20
+            redAmbient:
+              type: number
+              minimum: 0
+              maximum: 20
+            sharpening:
+              type: number
+              minimum: 0
+              maximum: 20
+        globalFinish:
+          type: object
+          additionalProperties: false
+          properties:
+            enabled:
+              type: boolean
+            contrast:
+              type: integer
+              minimum: 0
+              maximum: 20
+            redBlackSplitTone:
+              type: number
+              minimum: 0
+              maximum: 20
+            vignette:
+              type: number
+              minimum: 0
+              maximum: 20
+            grain:
+              type: number
+              minimum: 0
+              maximum: 10
+            centerGlow:
+              type: number
+              minimum: 0
+              maximum: 15
+
     CreateMatchCardStyle:
       type: object
       additionalProperties: false
@@ -1066,6 +1370,7 @@ components:
             - three-competitor-title-center
             - single-competitor-title-side
             - eccw-two-competitor-panel-template
+            - eccw-two-competitor-panel-premium
         fonts:
           $ref: "#/components/schemas/FontPreferences"
 
@@ -1459,7 +1764,9 @@ components:
         placements:
           $ref: "#/components/schemas/AssetPlacements"
         artDirection:
-          $ref: "#/components/schemas/EccwArtDirection"
+          oneOf:
+            - $ref: "#/components/schemas/EccwArtDirection"
+            - $ref: "#/components/schemas/PremiumEccwArtDirection"
         outputPsdName:
           $ref: "#/components/schemas/PsdOutputFileName"
         outputPreviewName:
@@ -1472,7 +1779,7 @@ components:
               style:
                 properties:
                   layoutPreset:
-                    enum: [two-competitor-title-center, two-competitor-title-lower, eccw-two-competitor-panel-template]
+                    enum: [two-competitor-title-center, two-competitor-title-lower, eccw-two-competitor-panel-template, eccw-two-competitor-panel-premium]
           then:
             properties:
               assets:
@@ -1522,6 +1829,44 @@ components:
                 required: [competitorLeftName, competitorRightName, matchTitle, date]
                 maxProperties: 4
                 properties:
+                  matchTitle:
+                    const: VS
+        - if:
+            properties:
+              style:
+                properties:
+                  layoutPreset:
+                    const: eccw-two-competitor-panel-premium
+          then:
+            properties:
+              canvas:
+                properties:
+                  width:
+                    const: 1920
+                  height:
+                    const: 1080
+              templateBackground:
+                properties:
+                  fileName:
+                    const: ECCW_JordanSinner_vs_EddieSlayer_template_bg_v1.png
+              assets:
+                required: [competitorLeft, competitorRight, showLogo]
+                maxProperties: 3
+                properties:
+                  competitorLeft:
+                    const: JordanSinner.png
+                  competitorRight:
+                    const: EddieSlayer.png
+                  showLogo:
+                    const: ECCW.png
+              text:
+                required: [competitorLeftName, competitorRightName, matchTitle]
+                maxProperties: 3
+                properties:
+                  competitorLeftName:
+                    const: JORDAN SINNER
+                  competitorRightName:
+                    const: EDDIE SLAYER
                   matchTitle:
                     const: VS
       example:

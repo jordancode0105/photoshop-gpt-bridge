@@ -457,10 +457,19 @@ const layoutPresetSchema = z.enum([
   "three-competitor-title-center",
   "single-competitor-title-side",
   "eccw-two-competitor-panel-template",
+  "eccw-two-competitor-panel-premium",
 ]);
 const ECCW_PANEL_LAYOUT_PRESET = "eccw-two-competitor-panel-template";
+const ECCW_PREMIUM_LAYOUT_PRESET = "eccw-two-competitor-panel-premium";
 const ECCW_PANEL_TEMPLATE_FILE_NAME =
   "ECCW_JordanSinner_vs_EddieSlayer_template_bg_v1.png";
+
+function isEccwLayoutPreset(layoutPreset) {
+  return (
+    layoutPreset === ECCW_PANEL_LAYOUT_PRESET ||
+    layoutPreset === ECCW_PREMIUM_LAYOUT_PRESET
+  );
+}
 
 const protectedAssetRoles = [
   "competitorLeft",
@@ -870,6 +879,163 @@ const eccwArtDirectionSchema = z
     }
   });
 
+const premiumRgbSchema = rgbSchema.refine(
+  (value) => value.red === 198 && value.green === 24 && value.blue === 32,
+  "Premium ECCW red must be rgb(198,24,32)"
+);
+const premiumSoftWhiteSchema = rgbSchema.refine(
+  (value) =>
+    value.red >= 225 &&
+    value.red <= 245 &&
+    Math.abs(value.red - value.green) <= 3 &&
+    Math.abs(value.red - value.blue) <= 3,
+  "Premium lower-center fill must be a neutral soft white near rgb(235,235,235)"
+);
+const premiumEffectSchema = z
+  .object({
+    enabled: z.boolean().optional(),
+    opacity: z.number().min(0).max(60).optional(),
+    blur: z.number().min(0).max(40).optional(),
+    distance: z.number().min(0).max(40).optional(),
+  })
+  .strict();
+const premiumCompetitorSchema = z
+  .object({
+    scale: z.number().min(0.9).max(1.1).optional(),
+    xOffset: z.number().min(-120).max(120).optional(),
+    yOffset: z.number().min(-100).max(100).optional(),
+    headTargetY: z.number().min(100).max(260).optional(),
+    depthShadow: premiumEffectSchema.optional(),
+    centerRim: premiumEffectSchema.optional(),
+    outerRim: premiumEffectSchema.optional(),
+    gradeStrength: z.number().min(0).max(100).optional(),
+    atmosphereOpacity: z.number().min(0).max(20).optional(),
+  })
+  .strict();
+const premiumPanelMasksSchema = z
+  .object({
+    enabled: z.literal(true).optional(),
+    inset: z.number().min(3).max(5).optional(),
+  })
+  .strict();
+const premiumCompositionSchema = z
+  .object({
+    targetHeightOccupancy: z.number().min(0.9).max(0.94).optional(),
+    centerGap: z.number().min(28).max(38).optional(),
+  })
+  .strict();
+const premiumLogoSchema = z
+  .object({
+    fitMode: z.enum(["largest-safe-fit", "explicit-width"]).optional(),
+    visibleWidth: z.number().min(160).max(452).optional(),
+    safePadding: z.number().min(12).max(16).optional(),
+    xOffset: eccwTextOffsetSchema.optional(),
+    yOffset: eccwTextOffsetSchema.optional(),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if (value.fitMode === "explicit-width" && value.visibleWidth === undefined) {
+      context.addIssue({
+        code: "custom",
+        path: ["visibleWidth"],
+        message: "visibleWidth is required when fitMode is explicit-width",
+      });
+    }
+  });
+const premiumNameplatesSchema = z
+  .object({
+    targetWidthOccupancy: z.number().min(0.5).max(0.95).optional(),
+    targetHeightOccupancy: z.number().min(0.3).max(0.9).optional(),
+    minimumHorizontalPadding: z.number().min(20).max(120).optional(),
+    maximumFontSize: z.number().min(36).max(120).optional(),
+    minimumFontSize: z.number().min(18).max(96).optional(),
+    tracking: z.number().min(-100).max(300).optional(),
+    fill: premiumRgbSchema.optional(),
+    opacity: z.number().min(88).max(92).optional(),
+    textureReveal: z.number().min(10).max(18).optional(),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if (
+      value.minimumFontSize !== undefined &&
+      value.maximumFontSize !== undefined &&
+      value.minimumFontSize > value.maximumFontSize
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["minimumFontSize"],
+        message: "minimumFontSize must not exceed maximumFontSize",
+      });
+    }
+  });
+const premiumVsSchema = z
+  .object({
+    fontSize: z.number().min(40).max(100).optional(),
+    xOffset: eccwTextOffsetSchema.optional(),
+    yOffset: eccwTextOffsetSchema.optional(),
+    fill: premiumRgbSchema.optional(),
+    opacity: z.number().min(88).max(92).optional(),
+    textureReveal: z.number().min(10).max(18).optional(),
+    stroke: z.literal(false).optional(),
+    centeringTolerance: z.number().min(1).max(3).optional(),
+  })
+  .strict();
+const premiumLowerCenterSchema = z
+  .object({
+    enabled: z.boolean().optional(),
+    text: matchCardTextValueSchema.min(1).max(80).optional(),
+    fontSize: z.number().min(22).max(26).optional(),
+    tracking: z.number().min(50).max(300).optional(),
+    fill: premiumSoftWhiteSchema.optional(),
+    opacity: z.number().min(80).max(100).optional(),
+    microplate: z.boolean().optional(),
+  })
+  .strict();
+const premiumGlobalFinishSchema = z
+  .object({
+    enabled: z.boolean().optional(),
+    contrast: z.number().int().min(0).max(20).optional(),
+    redBlackSplitTone: z.number().min(0).max(20).optional(),
+    vignette: z.number().min(0).max(20).optional(),
+    grain: z.number().min(0).max(10).optional(),
+    centerGlow: z.number().min(0).max(15).optional(),
+  })
+  .strict();
+const premiumRenderGradeSchema = z
+  .object({
+    blackDepth: z.number().min(0).max(20).optional(),
+    highlightRecovery: z.number().min(0).max(20).optional(),
+    contrast: z.number().min(0).max(20).optional(),
+    saturation: z.number().min(-20).max(20).optional(),
+    redAmbient: z.number().min(0).max(20).optional(),
+    sharpening: z.number().min(0).max(20).optional(),
+  })
+  .strict();
+const premiumEccwArtDirectionSchema = z
+  .object({
+    competitorLeft: premiumCompetitorSchema.optional(),
+    competitorRight: premiumCompetitorSchema.optional(),
+    panelMasks: premiumPanelMasksSchema.optional(),
+    composition: premiumCompositionSchema.optional(),
+    nameplates: premiumNameplatesSchema.optional(),
+    topPlate: z
+      .object({
+        mode: z.literal("logo-only").optional(),
+        logo: premiumLogoSchema.optional(),
+      })
+      .strict()
+      .optional(),
+    vs: premiumVsSchema.optional(),
+    lowerCenter: premiumLowerCenterSchema.optional(),
+    renderGrade: premiumRenderGradeSchema.optional(),
+    globalFinish: premiumGlobalFinishSchema.optional(),
+  })
+  .strict();
+const matchCardArtDirectionSchema = z.union([
+  eccwArtDirectionSchema,
+  premiumEccwArtDirectionSchema,
+]);
+
 const createMatchCardSchema = z
   .object({
     briefName: z
@@ -883,7 +1049,7 @@ const createMatchCardSchema = z
     assets: createMatchCardAssetsSchema,
     text: matchCardTextSchema,
     placements: assetPlacementsSchema.optional(),
-    artDirection: eccwArtDirectionSchema.optional(),
+    artDirection: matchCardArtDirectionSchema.optional(),
     outputPsdName: matchCardPsdNameSchema,
     outputPreviewName: matchCardPngNameSchema,
     outputManifestName: matchCardManifestNameSchema,
@@ -894,6 +1060,7 @@ const createMatchCardSchema = z
       "two-competitor-title-center": ["competitorLeft", "competitorRight"],
       "two-competitor-title-lower": ["competitorLeft", "competitorRight"],
       [ECCW_PANEL_LAYOUT_PRESET]: ["competitorLeft", "competitorRight"],
+      [ECCW_PREMIUM_LAYOUT_PRESET]: ["competitorLeft", "competitorRight"],
       "three-competitor-title-center": [
         "competitorLeft",
         "competitorRight",
@@ -911,7 +1078,20 @@ const createMatchCardSchema = z
       }
     }
 
-    if (value.style.layoutPreset === ECCW_PANEL_LAYOUT_PRESET) {
+    if (isEccwLayoutPreset(value.style.layoutPreset)) {
+      const presetArtDirectionResult =
+        value.style.layoutPreset === ECCW_PREMIUM_LAYOUT_PRESET
+          ? premiumEccwArtDirectionSchema.safeParse(value.artDirection || {})
+          : eccwArtDirectionSchema.safeParse(value.artDirection || {});
+      if (!presetArtDirectionResult.success) {
+        for (const issue of presetArtDirectionResult.error.issues) {
+          context.addIssue({
+            code: "custom",
+            path: ["artDirection", ...issue.path],
+            message: issue.message,
+          });
+        }
+      }
       if (value.canvas.width !== 1920 || value.canvas.height !== 1080) {
         context.addIssue({
           code: "custom",
@@ -939,12 +1119,26 @@ const createMatchCardSchema = z
           });
         }
       }
-      const requiredText = [
-        "competitorLeftName",
-        "competitorRightName",
-        "matchTitle",
-        "date",
-      ];
+      if (value.style.layoutPreset === ECCW_PREMIUM_LAYOUT_PRESET) {
+        const premiumAssetNames = {
+          competitorLeft: "JordanSinner.png",
+          competitorRight: "EddieSlayer.png",
+          showLogo: "ECCW.png",
+        };
+        for (const [role, fileName] of Object.entries(premiumAssetNames)) {
+          if (value.assets[role]?.toLowerCase() !== fileName.toLowerCase()) {
+            context.addIssue({
+              code: "custom",
+              path: ["assets", role],
+              message: `The premium ECCW preset requires ${role} to use ${fileName}`,
+            });
+          }
+        }
+      }
+      const requiredText =
+        value.style.layoutPreset === ECCW_PREMIUM_LAYOUT_PRESET
+          ? ["competitorLeftName", "competitorRightName", "matchTitle"]
+          : ["competitorLeftName", "competitorRightName", "matchTitle", "date"];
       for (const role of requiredText) {
         if (value.text[role] === undefined) {
           context.addIssue({
@@ -968,6 +1162,52 @@ const createMatchCardSchema = z
           code: "custom",
           path: ["text", "matchTitle"],
           message: 'The ECCW panel template preset requires matchTitle to be "VS"',
+        });
+      }
+      if (
+        value.style.layoutPreset === ECCW_PREMIUM_LAYOUT_PRESET &&
+        (value.text.date !== undefined || value.text.stipulation !== undefined)
+      ) {
+        context.addIssue({
+          code: "custom",
+          path: ["text"],
+          message:
+            "The premium ECCW logo-only top plate does not accept date or top stipulation text",
+        });
+      }
+      if (value.style.layoutPreset === ECCW_PREMIUM_LAYOUT_PRESET) {
+        const premiumDisplayNames = {
+          competitorLeftName: "JORDAN SINNER",
+          competitorRightName: "EDDIE SLAYER",
+        };
+        for (const [role, expected] of Object.entries(premiumDisplayNames)) {
+          if (value.text[role]?.trim().toUpperCase() !== expected) {
+            context.addIssue({
+              code: "custom",
+              path: ["text", role],
+              message: `The premium ECCW preset requires ${role} to be ${expected}`,
+            });
+          }
+        }
+      }
+      const premiumKeys = new Set([
+        "panelMasks",
+        "composition",
+        "lowerCenter",
+        "renderGrade",
+        "globalFinish",
+      ]);
+      const usesPremiumArtDirection = Object.keys(value.artDirection || {}).some((key) =>
+        premiumKeys.has(key)
+      );
+      if (
+        value.style.layoutPreset === ECCW_PANEL_LAYOUT_PRESET &&
+        usesPremiumArtDirection
+      ) {
+        context.addIssue({
+          code: "custom",
+          path: ["artDirection"],
+          message: "Premium ECCW controls require the premium layout preset",
         });
       }
     } else if (value.artDirection !== undefined) {

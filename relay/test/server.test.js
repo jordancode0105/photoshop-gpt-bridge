@@ -295,6 +295,81 @@ function validEccwPanelCreate(overrides = {}) {
   });
 }
 
+function validPremiumEccwCreate(overrides = {}) {
+  return validEccwPanelCreate({
+    style: validStyle({
+      layoutPreset: "eccw-two-competitor-panel-premium",
+    }),
+    text: {
+      competitorLeftName: "JORDAN SINNER",
+      competitorRightName: "EDDIE SLAYER",
+      matchTitle: "VS",
+    },
+    placements: undefined,
+    artDirection: {
+      competitorLeft: {
+        scale: 1.02,
+        xOffset: 0,
+        depthShadow: { opacity: 38, blur: 18, distance: 8 },
+        centerRim: { opacity: 30, blur: 5 },
+        outerRim: { opacity: 14, blur: 3 },
+      },
+      competitorRight: {
+        scale: 0.98,
+        xOffset: 0,
+      },
+      panelMasks: { enabled: true, inset: 4 },
+      composition: { targetHeightOccupancy: 0.92, centerGap: 33 },
+      nameplates: {
+        fill: { red: 198, green: 24, blue: 32 },
+        opacity: 90,
+        textureReveal: 14,
+      },
+      topPlate: {
+        mode: "logo-only",
+        logo: { fitMode: "largest-safe-fit", safePadding: 14 },
+      },
+      vs: {
+        fill: { red: 198, green: 24, blue: 32 },
+        opacity: 90,
+        textureReveal: 14,
+        stroke: false,
+        centeringTolerance: 2,
+      },
+      lowerCenter: {
+        enabled: true,
+        text: "FIRST TO THREE",
+        fontSize: 24,
+        tracking: 180,
+        fill: { red: 235, green: 235, blue: 235 },
+        opacity: 90,
+        microplate: true,
+      },
+      renderGrade: {
+        blackDepth: 8,
+        highlightRecovery: 6,
+        contrast: 8,
+        saturation: 0,
+        redAmbient: 8,
+        sharpening: 6,
+      },
+      globalFinish: {
+        enabled: true,
+        contrast: 8,
+        redBlackSplitTone: 8,
+        vignette: 10,
+        grain: 4,
+        centerGlow: 7,
+      },
+    },
+    outputPsdName: "ECCW_JordanSinner_vs_EddieSlayer_premium_v15.psd",
+    outputPreviewName: "ECCW_JordanSinner_vs_EddieSlayer_premium_v15.png",
+    outputManifestName:
+      "ECCW_JordanSinner_vs_EddieSlayer_premium_v15.matchcard.json",
+    ...overrides,
+  });
+}
+
 function validEccwArtDirection(overrides = {}) {
   return {
     competitorLeft: {
@@ -1030,6 +1105,223 @@ test("ECCW panel-template preset rejects incompatible geometry and content", asy
     const rejected = await request("/api/jobs/create-match-card", { body });
     assert.equal(rejected.response.status, 400);
   }
+});
+
+test("premium ECCW v15 is opt-in and accepts the complete bounded art-direction contract", async () => {
+  const create = await request("/api/jobs/create-match-card", {
+    body: validPremiumEccwCreate(),
+  });
+  assert.equal(create.response.status, 202);
+  const createJob = await getJob(create.body.jobId);
+  assert.equal(createJob.requiresConfirmation, true);
+  assert.equal(createJob.type, "createMatchCard");
+
+  const plan = await request("/api/jobs/plan-match-card", {
+    body: validPremiumEccwCreate({
+      outputPsdName: "premium_plan.psd",
+      outputPreviewName: "premium_plan.png",
+      outputManifestName: "premium_plan.matchcard.json",
+    }),
+  });
+  assert.equal(plan.response.status, 202);
+  const planJob = await getJob(plan.body.jobId);
+  assert.equal(planJob.requiresConfirmation, false);
+  assert.equal(planJob.type, "planMatchCard");
+});
+
+test("premium ECCW rejects legacy top text, unsafe composition, strokes, and non-canonical red", async () => {
+  const cases = [
+    validPremiumEccwCreate({
+      text: {
+        competitorLeftName: "JORDAN SINNER",
+        competitorRightName: "EDDIE SLAYER",
+        matchTitle: "VS",
+        date: "JULY 23RD",
+      },
+    }),
+    validPremiumEccwCreate({
+      artDirection: {
+        composition: { centerGap: 50 },
+      },
+    }),
+    validPremiumEccwCreate({
+      artDirection: {
+        vs: { stroke: true },
+      },
+    }),
+    validPremiumEccwCreate({
+      artDirection: {
+        nameplates: {
+          fill: { red: 255, green: 255, blue: 255 },
+        },
+      },
+    }),
+    validPremiumEccwCreate({
+      artDirection: {
+        panelMasks: { enabled: false },
+      },
+    }),
+    validPremiumEccwCreate({
+      artDirection: {
+        renderGrade: { sharpening: 21 },
+      },
+    }),
+    validPremiumEccwCreate({
+      artDirection: {
+        nameplates: { minimumFontSize: 90, maximumFontSize: 60 },
+      },
+    }),
+  ];
+  for (const body of cases) {
+    const rejected = await request("/api/jobs/create-match-card", { body });
+    assert.equal(rejected.response.status, 400);
+  }
+});
+
+test("premium controls do not alter legacy ECCW or non-ECCW request behavior", async () => {
+  const legacy = await request("/api/jobs/create-match-card", {
+    body: validEccwPanelCreate(),
+  });
+  assert.equal(legacy.response.status, 202);
+
+  const genericWithPremium = await request("/api/jobs/create-match-card", {
+    body: validCreateMatchCard({
+      artDirection: { composition: { centerGap: 33 } },
+    }),
+  });
+  assert.equal(genericWithPremium.response.status, 400);
+});
+
+test("premium ECCW source structure uses alpha geometry, polygon masks, editable groups, and deterministic diagnostics", () => {
+  const workerSource = readFileSync(
+    path.resolve(process.cwd(), "..", "local-agent", "bridge-worker.jsx"),
+    "utf8"
+  );
+  const geometryStart = workerSource.indexOf("function premiumPanelGeometry(");
+  const geometryEnd = workerSource.indexOf(
+    "\n    function premiumGeometryBounds(",
+    geometryStart
+  );
+  const boundsStart = geometryEnd + 1;
+  const boundsEnd = workerSource.indexOf(
+    "\n    function resolvedPremiumEccwArtDirection(",
+    boundsStart
+  );
+  assert.ok(geometryStart >= 0);
+  assert.ok(geometryEnd > geometryStart);
+  assert.ok(boundsEnd > boundsStart);
+  const panelGeometry = Function(
+    `"use strict"; return (${workerSource.slice(geometryStart, geometryEnd).trim()});`
+  )();
+  const geometryBounds = Function(
+    `"use strict"; return (${workerSource.slice(boundsStart, boundsEnd).trim()});`
+  )();
+  const left = panelGeometry("competitorLeft", 4);
+  const right = panelGeometry("competitorRight", 4);
+  assert.equal(left.points.length, 7);
+  assert.equal(right.points.length, 7);
+  assert.equal(left.inset, 4);
+  assert.equal(right.inset, 4);
+  assert.equal(left.dividerEdge, 942);
+  assert.equal(right.dividerEdge, 978);
+  assert.equal(left.nameplateTop, 850);
+  assert.equal(right.nameplateTop, 850);
+  assert.ok(geometryBounds(left).bottom <= 846);
+  assert.ok(geometryBounds(right).bottom <= 846);
+
+  const logoFitStart = workerSource.indexOf(
+    "function calculatePremiumLogoSafeFit("
+  );
+  const logoFitEnd = workerSource.indexOf(
+    "\n    function resolvePremiumEccwAssetGeometry(",
+    logoFitStart
+  );
+  const calculateLogoFit = Function(
+    `"use strict"; return (${workerSource.slice(logoFitStart, logoFitEnd).trim()});`
+  )();
+  const safeLogo = calculateLogoFit(1500, 1024, 14, null);
+  assert.equal(safeLogo.fitResolution, "largest-safe-fit");
+  assert.equal(safeLogo.contained, true);
+  assert.ok(safeLogo.visibleWidth <= 452);
+  assert.ok(safeLogo.visibleHeight <= 242);
+  const explicitLogo = calculateLogoFit(1500, 1024, 14, 260);
+  assert.equal(explicitLogo.visibleWidth, 260);
+  assert.equal(explicitLogo.fitResolution, "explicit-width");
+
+  assert.match(
+    workerSource,
+    /var ECCW_PREMIUM_LAYOUT_PRESET = "eccw-two-competitor-panel-premium";/
+  );
+  assert.match(workerSource, /function resolvePremiumEccwAssetGeometry\(/);
+  assert.match(workerSource, /sourceAlphaVisibleHeight/);
+  assert.match(workerSource, /targetHeightOccupancy: 0\.92, centerGap: 33/);
+  assert.match(workerSource, /preferredHeightOccupancy: preferredOccupancy/);
+  assert.match(workerSource, /occupancyClamped:/);
+  assert.match(workerSource, /requestedGap = Number\(resolved\.composition\.centerGap\)/);
+  assert.match(workerSource, /function addPolygonSelectionMask\(/);
+  assert.match(workerSource, /document\.selection\.select\(selectionPoints\)/);
+  assert.match(workerSource, /function applyMandatoryPremiumPanelMask\(/);
+  assert.match(workerSource, /verifyPremiumPanelMask\(document, layer, role, geometry\)/);
+  assert.match(workerSource, /PANEL MASK \(ON SMART OBJECT\)/);
+  for (const groupName of [
+    "DEPTH SHADOW",
+    "SMART OBJECT",
+    "GRADE",
+    "CENTER RIM",
+    "OUTER RIM",
+    "ATMOSPHERE",
+    "50 - GLOBAL FINISH",
+    "80 - LOWER CENTER INFO",
+  ]) {
+    assert.match(workerSource, new RegExp(groupName.replace(/[()]/g, "\\$&")));
+  }
+  assert.match(workerSource, /function setPremiumCompetitorEffects\(/);
+  assert.match(workerSource, /function createPremiumDirectionalRims\(/);
+  assert.match(workerSource, /function createPremiumHueSaturationAdjustment\(/);
+  assert.match(workerSource, /function createPremiumRedAmbientOverlay\(/);
+  assert.match(workerSource, /function applyPremiumSmartSharpen\(/);
+  assert.match(workerSource, /function createPremiumGlobalFinish\(/);
+  assert.match(workerSource, /function createPremiumGrainSmartObject\(/);
+  assert.match(workerSource, /newPlacedLayer/);
+  assert.match(workerSource, /charIDToTypeID\("AdNs"\)/);
+  assert.match(workerSource, /charIDToTypeID\("Mnch"\), true/);
+  assert.match(workerSource, /function validatePremiumEccwPreviewLayout\(/);
+  assert.match(workerSource, /function validatePremiumGroupStructure\(/);
+  assert.match(workerSource, /premiumCompetitorLeftPanelMask/);
+  assert.match(workerSource, /premiumCompetitorRightPanelMask/);
+  assert.match(workerSource, /center-divider breathing-room mismatch/);
+  assert.match(workerSource, /Premium showLogo safe-area validation failed/);
+  assert.match(workerSource, /Premium VS must not have a white outline or any stroke/);
+  assert.match(workerSource, /textureReveal: 14/);
+  assert.match(workerSource, /text: "FIRST TO THREE"/);
+  assert.match(workerSource, /role: "lowerCenterLabel"/);
+  assert.match(workerSource, /function buildPremiumEccwArtDirectionRecord\(/);
+  assert.match(workerSource, /competitorComposition: competitorComposition/);
+  assert.match(workerSource, /panelMasks: panelMasks/);
+  assert.match(workerSource, /renderEffects: renderEffects/);
+  assert.match(workerSource, /sharedGrade: cloneJsonValue\(resolved\.renderGrade\)/);
+  assert.match(workerSource, /premiumDiagnostics:/);
+  assert.match(workerSource, /performsPhotoshopWrite: false/);
+  assert.match(workerSource, /photoshopRuntimeMeasurementsPending: isPremium/);
+  assert.match(
+    workerSource,
+    /40 - COMPETITORS\/LEFT COMPETITOR\/PANEL MASK \(ON SMART OBJECT\)/
+  );
+
+  const premiumCreateStart = workerSource.indexOf(
+    "function resolvedPremiumEccwArtDirection("
+  );
+  const premiumCreateEnd = workerSource.indexOf(
+    "\n    function buildEccwVsFillDiagnostics(",
+    premiumCreateStart
+  );
+  const premiumResolverSource = workerSource.slice(
+    premiumCreateStart,
+    premiumCreateEnd
+  );
+  assert.doesNotMatch(premiumResolverSource, /dateDefaults|FIRST TO THREE RULES/);
+  assert.match(premiumResolverSource, /mode: "logo-only"/);
+  assert.match(premiumResolverSource, /stroke: false/);
 });
 
 test("ECCW worker preset preserves the template and validates deterministic placement", () => {

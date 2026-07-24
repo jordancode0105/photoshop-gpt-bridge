@@ -1364,15 +1364,17 @@
     var MATCH_LAYOUT_PRESETS = [
         "two-competitor-title-center", "two-competitor-title-lower",
         "three-competitor-title-center", "single-competitor-title-side",
-        "eccw-two-competitor-panel-template"
+        "eccw-two-competitor-panel-template", "eccw-two-competitor-panel-premium"
     ];
     var ECCW_PANEL_LAYOUT_PRESET = "eccw-two-competitor-panel-template";
+    var ECCW_PREMIUM_LAYOUT_PRESET = "eccw-two-competitor-panel-premium";
     var ECCW_PANEL_TEMPLATE_FILE_NAME = "ECCW_JordanSinner_vs_EddieSlayer_template_bg_v1.png";
     var ECCW_PANEL_CANVAS_WIDTH = 1920;
     var ECCW_PANEL_CANVAS_HEIGHT = 1080;
     var ECCW_LOGO_WIDTH_VERIFICATION_TOLERANCE = 1;
     var ECCW_LOGO_MAX_CORRECTION_ITERATIONS = 3;
     var ECCW_VS_APPROVED_FILL = { red: 198, green: 24, blue: 32 };
+    var ECCW_PREMIUM_SOFT_WHITE = { red: 235, green: 235, blue: 235 };
     var MATCH_VISIBILITY_ROLES = [
         "templateBackground", "atmosphere", "framesAndPanels", "competitorRenders",
         "championshipAndBelt", "matchTitleGroup", "eventInformation", "showLogoGroup",
@@ -1385,6 +1387,12 @@
     var MATCH_SUPPORTED_INPUT_EXTENSIONS = [".png", ".jpg", ".jpeg", ".psd", ".tif", ".tiff"];
 
     function own(object, key) { return object && Object.prototype.hasOwnProperty.call(object, key); }
+    function isEccwLayoutPreset(layoutPreset) {
+        return layoutPreset === ECCW_PANEL_LAYOUT_PRESET || layoutPreset === ECCW_PREMIUM_LAYOUT_PRESET;
+    }
+    function isPremiumEccwLayoutPreset(layoutPreset) {
+        return layoutPreset === ECCW_PREMIUM_LAYOUT_PRESET;
+    }
     function valueInList(value, list) {
         for (var i = 0; i < list.length; i++) if (list[i] === value) return true;
         return false;
@@ -1746,6 +1754,255 @@
         validateResolvedEccwTopPlateSpacing(resolved);
         return resolved;
     }
+    function validatePremiumEffect(value, label) {
+        assertAllowedKeys(requirePlainObject(value, label), ["enabled", "opacity", "blur", "distance"], label);
+        if (own(value, "enabled") && typeof value.enabled !== "boolean") throw new Error(label + ".enabled must be boolean.");
+        validateOptionalRange(value, "opacity", 0, 60, label);
+        validateOptionalRange(value, "blur", 0, 40, label);
+        validateOptionalRange(value, "distance", 0, 40, label);
+    }
+    function validatePremiumCompetitor(value, label) {
+        assertAllowedKeys(requirePlainObject(value, label), [
+            "scale", "xOffset", "yOffset", "headTargetY", "depthShadow",
+            "centerRim", "outerRim", "gradeStrength", "atmosphereOpacity"
+        ], label);
+        validateOptionalRange(value, "scale", 0.9, 1.1, label);
+        validateOptionalRange(value, "xOffset", -120, 120, label);
+        validateOptionalRange(value, "yOffset", -100, 100, label);
+        validateOptionalRange(value, "headTargetY", 100, 260, label);
+        validateOptionalRange(value, "gradeStrength", 0, 100, label);
+        validateOptionalRange(value, "atmosphereOpacity", 0, 20, label);
+        if (own(value, "depthShadow")) validatePremiumEffect(value.depthShadow, label + ".depthShadow");
+        if (own(value, "centerRim")) validatePremiumEffect(value.centerRim, label + ".centerRim");
+        if (own(value, "outerRim")) validatePremiumEffect(value.outerRim, label + ".outerRim");
+    }
+    function validatePremiumRgb(value, label) {
+        var rgb = validateRgb(value, label);
+        if (!eccwRgbEqual(rgb, ECCW_VS_APPROVED_FILL, 0)) {
+            throw new Error(label + " must match canonical ECCW red " + eccwRgbText(ECCW_VS_APPROVED_FILL) + ".");
+        }
+    }
+    function validatePremiumSoftWhite(value, label) {
+        var rgb = validateRgb(value, label);
+        if (
+            rgb.red < 225 || rgb.red > 245 ||
+            Math.abs(rgb.red - rgb.green) > 3 ||
+            Math.abs(rgb.red - rgb.blue) > 3
+        ) throw new Error(label + " must be a neutral soft white near rgb(235,235,235).");
+    }
+    function validatePremiumEccwArtDirection(value, label) {
+        label = label || "artDirection";
+        assertAllowedKeys(requirePlainObject(value, label), [
+            "competitorLeft", "competitorRight", "panelMasks", "composition",
+            "nameplates", "topPlate", "vs", "lowerCenter", "renderGrade", "globalFinish"
+        ], label);
+        if (own(value, "competitorLeft")) validatePremiumCompetitor(value.competitorLeft, label + ".competitorLeft");
+        if (own(value, "competitorRight")) validatePremiumCompetitor(value.competitorRight, label + ".competitorRight");
+        if (own(value, "panelMasks")) {
+            assertAllowedKeys(requirePlainObject(value.panelMasks, label + ".panelMasks"), ["enabled", "inset"], label + ".panelMasks");
+            if (own(value.panelMasks, "enabled") && value.panelMasks.enabled !== true) throw new Error(label + ".panelMasks.enabled must remain true.");
+            validateOptionalRange(value.panelMasks, "inset", 3, 5, label + ".panelMasks");
+        }
+        if (own(value, "composition")) {
+            assertAllowedKeys(requirePlainObject(value.composition, label + ".composition"), ["targetHeightOccupancy", "centerGap"], label + ".composition");
+            validateOptionalRange(value.composition, "targetHeightOccupancy", 0.9, 0.94, label + ".composition");
+            validateOptionalRange(value.composition, "centerGap", 28, 38, label + ".composition");
+        }
+        if (own(value, "nameplates")) {
+            assertAllowedKeys(requirePlainObject(value.nameplates, label + ".nameplates"), [
+                "targetWidthOccupancy", "targetHeightOccupancy", "minimumHorizontalPadding",
+                "maximumFontSize", "minimumFontSize", "tracking", "fill", "opacity", "textureReveal"
+            ], label + ".nameplates");
+            validateOptionalRange(value.nameplates, "targetWidthOccupancy", 0.5, 0.95, label + ".nameplates");
+            validateOptionalRange(value.nameplates, "targetHeightOccupancy", 0.3, 0.9, label + ".nameplates");
+            validateOptionalRange(value.nameplates, "minimumHorizontalPadding", 20, 120, label + ".nameplates");
+            validateOptionalRange(value.nameplates, "maximumFontSize", 36, 120, label + ".nameplates");
+            validateOptionalRange(value.nameplates, "minimumFontSize", 18, 96, label + ".nameplates");
+            validateOptionalRange(value.nameplates, "tracking", -100, 300, label + ".nameplates");
+            validateOptionalRange(value.nameplates, "opacity", 88, 92, label + ".nameplates");
+            validateOptionalRange(value.nameplates, "textureReveal", 10, 18, label + ".nameplates");
+            if (own(value.nameplates, "fill")) validatePremiumRgb(value.nameplates.fill, label + ".nameplates.fill");
+            if (
+                own(value.nameplates, "minimumFontSize") &&
+                own(value.nameplates, "maximumFontSize") &&
+                Number(value.nameplates.minimumFontSize) > Number(value.nameplates.maximumFontSize)
+            ) throw new Error(label + ".nameplates.minimumFontSize must not exceed maximumFontSize.");
+        }
+        if (own(value, "topPlate")) {
+            assertAllowedKeys(requirePlainObject(value.topPlate, label + ".topPlate"), ["mode", "logo"], label + ".topPlate");
+            if (own(value.topPlate, "mode") && value.topPlate.mode !== "logo-only") throw new Error(label + ".topPlate.mode must be logo-only.");
+            if (own(value.topPlate, "logo")) {
+                var logo = value.topPlate.logo;
+                assertAllowedKeys(requirePlainObject(logo, label + ".topPlate.logo"), ["fitMode", "visibleWidth", "safePadding", "xOffset", "yOffset"], label + ".topPlate.logo");
+                if (own(logo, "fitMode") && logo.fitMode !== "largest-safe-fit" && logo.fitMode !== "explicit-width") throw new Error(label + ".topPlate.logo.fitMode is unsupported.");
+                validateOptionalRange(logo, "visibleWidth", 160, 452, label + ".topPlate.logo");
+                validateOptionalRange(logo, "safePadding", 12, 16, label + ".topPlate.logo");
+                validateOptionalRange(logo, "xOffset", -150, 150, label + ".topPlate.logo");
+                validateOptionalRange(logo, "yOffset", -150, 150, label + ".topPlate.logo");
+                if (logo.fitMode === "explicit-width" && !own(logo, "visibleWidth")) throw new Error(label + ".topPlate.logo.visibleWidth is required for explicit-width.");
+            }
+        }
+        if (own(value, "vs")) {
+            assertAllowedKeys(requirePlainObject(value.vs, label + ".vs"), [
+                "fontSize", "xOffset", "yOffset", "fill", "opacity",
+                "textureReveal", "stroke", "centeringTolerance"
+            ], label + ".vs");
+            validateOptionalRange(value.vs, "fontSize", 40, 100, label + ".vs");
+            validateOptionalRange(value.vs, "xOffset", -150, 150, label + ".vs");
+            validateOptionalRange(value.vs, "yOffset", -150, 150, label + ".vs");
+            validateOptionalRange(value.vs, "opacity", 88, 92, label + ".vs");
+            validateOptionalRange(value.vs, "textureReveal", 10, 18, label + ".vs");
+            validateOptionalRange(value.vs, "centeringTolerance", 1, 3, label + ".vs");
+            if (own(value.vs, "stroke") && value.vs.stroke !== false) throw new Error(label + ".vs.stroke must remain false.");
+            if (own(value.vs, "fill")) validatePremiumRgb(value.vs.fill, label + ".vs.fill");
+        }
+        if (own(value, "lowerCenter")) {
+            assertAllowedKeys(requirePlainObject(value.lowerCenter, label + ".lowerCenter"), ["enabled", "text", "fontSize", "tracking", "fill", "opacity", "microplate"], label + ".lowerCenter");
+            if (own(value.lowerCenter, "enabled") && typeof value.lowerCenter.enabled !== "boolean") throw new Error(label + ".lowerCenter.enabled must be boolean.");
+            if (own(value.lowerCenter, "text")) requireString(value.lowerCenter.text, label + ".lowerCenter.text", 1, 80, false);
+            validateOptionalRange(value.lowerCenter, "fontSize", 22, 26, label + ".lowerCenter");
+            validateOptionalRange(value.lowerCenter, "tracking", 50, 300, label + ".lowerCenter");
+            validateOptionalRange(value.lowerCenter, "opacity", 80, 100, label + ".lowerCenter");
+            if (own(value.lowerCenter, "fill")) validatePremiumSoftWhite(value.lowerCenter.fill, label + ".lowerCenter.fill");
+            if (own(value.lowerCenter, "microplate") && typeof value.lowerCenter.microplate !== "boolean") throw new Error(label + ".lowerCenter.microplate must be boolean.");
+        }
+        if (own(value, "globalFinish")) {
+            assertAllowedKeys(requirePlainObject(value.globalFinish, label + ".globalFinish"), ["enabled", "contrast", "redBlackSplitTone", "vignette", "grain", "centerGlow"], label + ".globalFinish");
+            if (own(value.globalFinish, "enabled") && typeof value.globalFinish.enabled !== "boolean") throw new Error(label + ".globalFinish.enabled must be boolean.");
+            validateOptionalRange(value.globalFinish, "contrast", 0, 20, label + ".globalFinish");
+            validateOptionalRange(value.globalFinish, "redBlackSplitTone", 0, 20, label + ".globalFinish");
+            validateOptionalRange(value.globalFinish, "vignette", 0, 20, label + ".globalFinish");
+            validateOptionalRange(value.globalFinish, "grain", 0, 10, label + ".globalFinish");
+            validateOptionalRange(value.globalFinish, "centerGlow", 0, 15, label + ".globalFinish");
+        }
+        if (own(value, "renderGrade")) {
+            assertAllowedKeys(requirePlainObject(value.renderGrade, label + ".renderGrade"), ["blackDepth", "highlightRecovery", "contrast", "saturation", "redAmbient", "sharpening"], label + ".renderGrade");
+            validateOptionalRange(value.renderGrade, "blackDepth", 0, 20, label + ".renderGrade");
+            validateOptionalRange(value.renderGrade, "highlightRecovery", 0, 20, label + ".renderGrade");
+            validateOptionalRange(value.renderGrade, "contrast", 0, 20, label + ".renderGrade");
+            validateOptionalRange(value.renderGrade, "saturation", -20, 20, label + ".renderGrade");
+            validateOptionalRange(value.renderGrade, "redAmbient", 0, 20, label + ".renderGrade");
+            validateOptionalRange(value.renderGrade, "sharpening", 0, 20, label + ".renderGrade");
+        }
+    }
+    function premiumPanelGeometry(role, inset) {
+        inset = Number(inset);
+        if (role === "competitorLeft") {
+            return {
+                role: role,
+                inset: inset,
+                dividerEdge: 942,
+                nameplateTop: 850,
+                points: [
+                    [135 + inset, 170 + inset],
+                    [886 - inset, 170 + inset],
+                    [932 - inset, 216 + inset],
+                    [932 - inset, 850 - inset],
+                    [166 + inset, 850 - inset],
+                    [166 + inset, 304 - inset],
+                    [135 + inset, 270 - inset]
+                ]
+            };
+        }
+        return {
+            role: role,
+            inset: inset,
+            dividerEdge: 978,
+            nameplateTop: 850,
+            points: [
+                [988 + inset, 216 + inset],
+                [1034 + inset, 170 + inset],
+                [1785 - inset, 170 + inset],
+                [1785 - inset, 270 - inset],
+                [1754 - inset, 304 - inset],
+                [1754 - inset, 850 - inset],
+                [988 + inset, 850 - inset]
+            ]
+        };
+    }
+    function premiumGeometryBounds(geometry) {
+        var left = Infinity, top = Infinity, right = -Infinity, bottom = -Infinity;
+        for (var i = 0; i < geometry.points.length; i++) {
+            left = Math.min(left, Number(geometry.points[i][0]));
+            top = Math.min(top, Number(geometry.points[i][1]));
+            right = Math.max(right, Number(geometry.points[i][0]));
+            bottom = Math.max(bottom, Number(geometry.points[i][1]));
+        }
+        return { left: left, top: top, right: right, bottom: bottom, width: right - left, height: bottom - top };
+    }
+    function resolvedPremiumEccwArtDirection(requested) {
+        requested = requested || {};
+        validatePremiumEccwArtDirection(requested, "artDirection");
+        var effectShadow = { enabled: true, opacity: 38, blur: 18, distance: 8 };
+        var centerRim = { enabled: true, opacity: 30, blur: 5, distance: 0 };
+        var outerRim = { enabled: true, opacity: 14, blur: 3, distance: 0 };
+        function competitor(override) {
+            override = override || {};
+            var result = mergeEccwDirection({
+                scale: 1, xOffset: 0, yOffset: 0, headTargetY: 170,
+                gradeStrength: 55, atmosphereOpacity: 8
+            }, override);
+            result.depthShadow = mergeEccwDirection(effectShadow, override.depthShadow || {});
+            result.centerRim = mergeEccwDirection(centerRim, override.centerRim || {});
+            result.outerRim = mergeEccwDirection(outerRim, override.outerRim || {});
+            return result;
+        }
+        var requestedTop = requested.topPlate || {}, requestedLogo = requestedTop.logo || {};
+        var requestedVs = requested.vs || {}, requestedNames = requested.nameplates || {};
+        var resolved = {
+            version: 15,
+            compositionMode: "premium-panel-integration",
+            competitorLeft: competitor(requested.competitorLeft),
+            competitorRight: competitor(requested.competitorRight),
+            panelMasks: mergeEccwDirection({ enabled: true, inset: 4 }, requested.panelMasks || {}),
+            composition: mergeEccwDirection({ targetHeightOccupancy: 0.92, centerGap: 33 }, requested.composition || {}),
+            nameplates: mergeEccwDirection({
+                targetWidthOccupancy: 0.82, targetHeightOccupancy: 0.60,
+                minimumHorizontalPadding: 30, maximumFontSize: 92,
+                minimumFontSize: 40, tracking: 0,
+                fill: cloneJsonValue(ECCW_VS_APPROVED_FILL), opacity: 90, textureReveal: 14
+            }, requestedNames),
+            topPlate: {
+                mode: "logo-only",
+                logo: mergeEccwDirection({
+                    fitMode: "largest-safe-fit", visibleWidth: null, visibleHeight: null,
+                    safePadding: 14, xOffset: 0, yOffset: 0,
+                    centerX: 960, centerY: 142, verificationTolerance: ECCW_LOGO_WIDTH_VERIFICATION_TOLERANCE
+                }, requestedLogo)
+            },
+            vs: mergeEccwDirection({
+                fontSize: 78, xOffset: 0, yOffset: 6,
+                fill: cloneJsonValue(ECCW_VS_APPROVED_FILL), opacity: 90,
+                textureReveal: 14, stroke: false, centeringTolerance: 2,
+                hexagonCenter: { x: 960, y: 594 }
+            }, requestedVs),
+            lowerCenter: mergeEccwDirection({
+                enabled: true, text: "FIRST TO THREE", fontSize: 24,
+                tracking: 180, fill: cloneJsonValue(ECCW_PREMIUM_SOFT_WHITE),
+                opacity: 90, microplate: true,
+                safeBounds: { left: 820, top: 1002, right: 1100, bottom: 1064 }
+            }, requested.lowerCenter || {}),
+            renderGrade: mergeEccwDirection({
+                blackDepth: 8, highlightRecovery: 6, contrast: 8,
+                saturation: 0, redAmbient: 8, sharpening: 6
+            }, requested.renderGrade || {}),
+            globalFinish: mergeEccwDirection({
+                enabled: true, contrast: 8, redBlackSplitTone: 8,
+                vignette: 10, grain: 4, centerGlow: 7
+            }, requested.globalFinish || {})
+        };
+        resolved.nameplates.fill = cloneJsonValue(ECCW_VS_APPROVED_FILL);
+        resolved.vs.fill = cloneJsonValue(ECCW_VS_APPROVED_FILL);
+        resolved.vs.stroke = false;
+        resolved.panelMasks.enabled = true;
+        resolved.topPlate.mode = "logo-only";
+        if (resolved.nameplates.minimumFontSize > resolved.nameplates.maximumFontSize) {
+            throw new Error("Resolved premium nameplate minimumFontSize exceeds maximumFontSize.");
+        }
+        resolved.competitorLeft.panelGeometry = premiumPanelGeometry("competitorLeft", resolved.panelMasks.inset);
+        resolved.competitorRight.panelGeometry = premiumPanelGeometry("competitorRight", resolved.panelMasks.inset);
+        return resolved;
+    }
     function buildEccwVsFillDiagnostics(requested, resolved, runtime) {
         var requestedFill = requested && requested.vs && own(requested.vs, "fill") ?
             cloneJsonValue(requested.vs.fill) :
@@ -1788,7 +2045,7 @@
         if (
             payload.style.layoutPreset === "two-competitor-title-center" ||
             payload.style.layoutPreset === "two-competitor-title-lower" ||
-            payload.style.layoutPreset === ECCW_PANEL_LAYOUT_PRESET
+            isEccwLayoutPreset(payload.style.layoutPreset)
         ) {
             if (!own(payload.assets, "competitorLeft") || !own(payload.assets, "competitorRight")) throw new Error("The selected two-competitor layout requires competitorLeft and competitorRight assets.");
         } else if (payload.style.layoutPreset === "three-competitor-title-center") {
@@ -1797,8 +2054,11 @@
             throw new Error("The selected single-competitor layout requires competitorCenter.");
         }
         validateTextMap(payload.text, "text");
-        if (payload.style.layoutPreset === ECCW_PANEL_LAYOUT_PRESET) {
-            if (own(payload, "artDirection")) validateEccwArtDirection(payload.artDirection, "artDirection");
+        if (isEccwLayoutPreset(payload.style.layoutPreset)) {
+            if (own(payload, "artDirection")) {
+                if (isPremiumEccwLayoutPreset(payload.style.layoutPreset)) validatePremiumEccwArtDirection(payload.artDirection, "artDirection");
+                else validateEccwArtDirection(payload.artDirection, "artDirection");
+            }
             if (Number(payload.canvas.width) !== ECCW_PANEL_CANVAS_WIDTH || Number(payload.canvas.height) !== ECCW_PANEL_CANVAS_HEIGHT) {
                 throw new Error("The ECCW panel template preset requires an exact 1920x1080 canvas.");
             }
@@ -1809,19 +2069,43 @@
             for (var eccwAssetIndex = 0; eccwAssetIndex < eccwAssetRoles.length; eccwAssetIndex++) {
                 if (!valueInList(eccwAssetRoles[eccwAssetIndex], allowedEccwAssets)) throw new Error("The ECCW panel template preset supports only competitorLeft, competitorRight, and showLogo assets.");
             }
-            var requiredEccwText = ["competitorLeftName", "competitorRightName", "matchTitle", "date"];
+            if (isPremiumEccwLayoutPreset(payload.style.layoutPreset)) {
+                var exactPremiumAssets = {
+                    competitorLeft: "JordanSinner.png",
+                    competitorRight: "EddieSlayer.png",
+                    showLogo: "ECCW.png"
+                };
+                for (var premiumAssetRole in exactPremiumAssets) if (own(exactPremiumAssets, premiumAssetRole)) {
+                    if (String(payload.assets[premiumAssetRole]).toLowerCase() !== String(exactPremiumAssets[premiumAssetRole]).toLowerCase()) {
+                        throw new Error("The premium ECCW preset requires assets." + premiumAssetRole + ' to use "' + exactPremiumAssets[premiumAssetRole] + '".');
+                    }
+                }
+            }
+            var requiredEccwText = isPremiumEccwLayoutPreset(payload.style.layoutPreset) ?
+                ["competitorLeftName", "competitorRightName", "matchTitle"] :
+                ["competitorLeftName", "competitorRightName", "matchTitle", "date"];
             var eccwTextRoles = ownKeys(payload.text);
             for (var requiredTextIndex = 0; requiredTextIndex < requiredEccwText.length; requiredTextIndex++) {
                 if (!own(payload.text, requiredEccwText[requiredTextIndex])) throw new Error("The ECCW panel template preset requires text." + requiredEccwText[requiredTextIndex] + ".");
             }
             for (var eccwTextIndex = 0; eccwTextIndex < eccwTextRoles.length; eccwTextIndex++) {
-                if (!valueInList(eccwTextRoles[eccwTextIndex], requiredEccwText)) throw new Error("The ECCW panel template preset supports only the two competitor names, matchTitle, and date text.");
+                if (!valueInList(eccwTextRoles[eccwTextIndex], requiredEccwText)) {
+                    throw new Error(
+                        isPremiumEccwLayoutPreset(payload.style.layoutPreset) ?
+                        "The premium ECCW logo-only preset supports only the two competitor names and matchTitle text." :
+                        "The ECCW panel template preset supports only the two competitor names, matchTitle, and date text."
+                    );
+                }
             }
             if (String(payload.text.matchTitle).replace(/^\s+|\s+$/g, "").toUpperCase() !== "VS") {
                 throw new Error('The ECCW panel template preset requires text.matchTitle to be "VS".');
             }
+            if (isPremiumEccwLayoutPreset(payload.style.layoutPreset)) {
+                if (String(payload.text.competitorLeftName).replace(/^\s+|\s+$/g, "").toUpperCase() !== "JORDAN SINNER") throw new Error('The premium ECCW preset requires text.competitorLeftName to be "JORDAN SINNER".');
+                if (String(payload.text.competitorRightName).replace(/^\s+|\s+$/g, "").toUpperCase() !== "EDDIE SLAYER") throw new Error('The premium ECCW preset requires text.competitorRightName to be "EDDIE SLAYER".');
+            }
         } else if (own(payload, "artDirection")) {
-            throw new Error("artDirection is supported only by the ECCW panel template preset.");
+            throw new Error("artDirection is supported only by an ECCW panel preset.");
         }
         if (own(payload, "placements")) {
             validatePlacements(payload.placements, "placements");
@@ -2037,6 +2321,29 @@
         };
     }
     function plannedMatchCardGroups(layoutPreset) {
+        if (layoutPreset === ECCW_PREMIUM_LAYOUT_PRESET) {
+            return [
+                "00 - BALE CC", "10 - TEMPLATE", "40 - COMPETITORS",
+                "40 - COMPETITORS/LEFT COMPETITOR",
+                "40 - COMPETITORS/LEFT COMPETITOR/ATMOSPHERE",
+                "40 - COMPETITORS/LEFT COMPETITOR/OUTER RIM",
+                "40 - COMPETITORS/LEFT COMPETITOR/CENTER RIM",
+                "40 - COMPETITORS/LEFT COMPETITOR/GRADE",
+                "40 - COMPETITORS/LEFT COMPETITOR/SMART OBJECT",
+                "40 - COMPETITORS/LEFT COMPETITOR/PANEL MASK (ON SMART OBJECT)",
+                "40 - COMPETITORS/LEFT COMPETITOR/DEPTH SHADOW",
+                "40 - COMPETITORS/RIGHT COMPETITOR",
+                "40 - COMPETITORS/RIGHT COMPETITOR/ATMOSPHERE",
+                "40 - COMPETITORS/RIGHT COMPETITOR/OUTER RIM",
+                "40 - COMPETITORS/RIGHT COMPETITOR/CENTER RIM",
+                "40 - COMPETITORS/RIGHT COMPETITOR/GRADE",
+                "40 - COMPETITORS/RIGHT COMPETITOR/SMART OBJECT",
+                "40 - COMPETITORS/RIGHT COMPETITOR/PANEL MASK (ON SMART OBJECT)",
+                "40 - COMPETITORS/RIGHT COMPETITOR/DEPTH SHADOW",
+                "50 - GLOBAL FINISH", "60 - TOP PLATE", "70 - LIVE TEXT",
+                "80 - LOWER CENTER INFO"
+            ];
+        }
         if (layoutPreset === ECCW_PANEL_LAYOUT_PRESET) {
             return [
                 "00 - BALE CC", "10 - TEMPLATE BACKGROUND", "40 - COMPETITOR RENDERS",
@@ -2064,16 +2371,31 @@
     function planMatchCard(input) {
         var payload = validateCreateMatchCardPayload(input.payload || {});
         var preflight = preflightCreateMatchCard(input, payload);
-        var requestedArtDirection = payload.style.layoutPreset === ECCW_PANEL_LAYOUT_PRESET && own(payload, "artDirection") ? cloneJsonValue(payload.artDirection) : null;
-        var resolvedArtDirection = payload.style.layoutPreset === ECCW_PANEL_LAYOUT_PRESET ? resolvedEccwArtDirection(payload.artDirection || {}) : null;
+        var isEccw = isEccwLayoutPreset(payload.style.layoutPreset);
+        var isPremium = isPremiumEccwLayoutPreset(payload.style.layoutPreset);
+        var requestedArtDirection = isEccw && own(payload, "artDirection") ? cloneJsonValue(payload.artDirection) : null;
+        var resolvedArtDirection = isPremium ?
+            resolvedPremiumEccwArtDirection(payload.artDirection || {}) :
+            (isEccw ? resolvedEccwArtDirection(payload.artDirection || {}) : null);
+        if (isPremium && preflight.missingFiles.length === 0) {
+            resolvedArtDirection = resolvePremiumEccwAssetGeometry(matchWorkingFolder(input), payload, resolvedArtDirection);
+        }
         var plannedRequestedArtDirection = resolvedArtDirection ? cloneJsonValue(requestedArtDirection || {}) : null;
         if (plannedRequestedArtDirection) {
             if (!own(plannedRequestedArtDirection, "vs")) plannedRequestedArtDirection.vs = {};
             if (!own(plannedRequestedArtDirection.vs, "fill")) plannedRequestedArtDirection.vs.fill = null;
         }
         var plannedText = cloneJsonValue(payload.text);
-        if (resolvedArtDirection && own(resolvedArtDirection.topPlate.stipulation, "text")) {
+        if (!isPremium && resolvedArtDirection && own(resolvedArtDirection.topPlate.stipulation, "text")) {
             plannedText.stipulation = resolvedArtDirection.topPlate.stipulation.text;
+        }
+        var textMappings = plannedTextMappings(plannedText);
+        if (isPremium && resolvedArtDirection.lowerCenter.enabled) {
+            textMappings.push({
+                role: "lowerCenterLabel",
+                layerName: "LOWER CENTER - FIRST TO THREE",
+                value: resolvedArtDirection.lowerCenter.text
+            });
         }
         return {
             ready: preflight.ready,
@@ -2081,13 +2403,15 @@
             existingOutputs: preflight.existingOutputs,
             baleCc: preflight.baleCc,
             plannedLayerGroups: plannedMatchCardGroups(payload.style.layoutPreset),
-            textMappings: plannedTextMappings(plannedText),
+            textMappings: textMappings,
             assetMappings: payload.assets,
             templateBackground: payload.templateBackground,
             artDirection: resolvedArtDirection ? {
                 requested: plannedRequestedArtDirection,
                 resolved: resolvedArtDirection,
-                vsFill: buildEccwVsFillDiagnostics(requestedArtDirection || {}, resolvedArtDirection, null)
+                vsFill: buildEccwVsFillDiagnostics(requestedArtDirection || {}, resolvedArtDirection, null),
+                premium: isPremium,
+                photoshopRuntimeMeasurementsPending: isPremium
             } : null,
             outputPsdName: payload.outputPsdName,
             outputPreviewName: payload.outputPreviewName,
@@ -2115,6 +2439,7 @@
         competitorRightName: "COMPETITOR RIGHT NAME",
         competitorCenterName: "COMPETITOR CENTER NAME",
         matchTitle: "MAIN MATCH TITLE",
+        lowerCenterLabel: "LOWER CENTER - FIRST TO THREE",
         stipulation: "MATCH STIPULATION",
         date: "EVENT DATE",
         time: "EVENT TIME",
@@ -2132,6 +2457,8 @@
         { role: "finishingEffects", name: "90 - FINISHING EFFECTS" }
     ];
     function groupForAssetRole(groups, role) {
+        if (role === "competitorLeft" && groups.premiumCompetitorLeftBase) return groups.premiumCompetitorLeftBase;
+        if (role === "competitorRight" && groups.premiumCompetitorRightBase) return groups.premiumCompetitorRightBase;
         if (role === "competitorLeft" || role === "competitorRight" || role === "competitorCenter" || role === "suppliedCharacterArtwork" || role === "suppliedPhotograph") return groups.competitorRenders;
         if (role === "beltImage" || role === "championshipLogo") return groups.championshipAndBelt;
         if (role === "showLogo" || role === "promotionLogo") return groups.showLogoGroup;
@@ -2141,7 +2468,16 @@
     function createMatchCardGroups(document, layoutPreset) {
         var groups = {};
         var definitions = MATCH_GROUP_DEFINITIONS;
-        if (layoutPreset === ECCW_PANEL_LAYOUT_PRESET) {
+        if (layoutPreset === ECCW_PREMIUM_LAYOUT_PRESET) {
+            definitions = [
+                { role: "templateBackground", name: "10 - TEMPLATE" },
+                { role: "competitorRenders", name: "40 - COMPETITORS" },
+                { role: "finishingEffects", name: "50 - GLOBAL FINISH" },
+                { role: "showLogoGroup", name: "60 - TOP PLATE" },
+                { role: "matchTitleGroup", name: "70 - LIVE TEXT" },
+                { role: "eventInformation", name: "80 - LOWER CENTER INFO" }
+            ];
+        } else if (layoutPreset === ECCW_PANEL_LAYOUT_PRESET) {
             // Photoshop inserts every new group at the top. This creation order
             // produces the required bottom-to-top stack:
             // template, competitors, logo, live match text, live event text.
@@ -2159,6 +2495,31 @@
             var group = document.layerSets.add();
             group.name = definitions[i].name;
             groups[definitions[i].role] = group;
+        }
+        if (layoutPreset === ECCW_PREMIUM_LAYOUT_PRESET) {
+            function addPremiumCompetitorGroups(rolePrefix, roleKey) {
+                var root = groups.competitorRenders.layerSets.add();
+                root.name = rolePrefix + " COMPETITOR";
+                var names = [
+                    // Photoshop inserts each new child at the top, so create
+                    // the desired bottom-to-top stack in reverse order.
+                    ["depthShadow", "DEPTH SHADOW"],
+                    ["panelMask", "PANEL MASK (ON SMART OBJECT)"],
+                    ["base", "SMART OBJECT"],
+                    ["grade", "GRADE"],
+                    ["centerRim", "CENTER RIM"],
+                    ["outerRim", "OUTER RIM"],
+                    ["atmosphere", "ATMOSPHERE"]
+                ];
+                groups[roleKey] = root;
+                for (var childIndex = 0; childIndex < names.length; childIndex++) {
+                    var child = root.layerSets.add();
+                    child.name = names[childIndex][1];
+                    groups[roleKey + names[childIndex][0].charAt(0).toUpperCase() + names[childIndex][0].substring(1)] = child;
+                }
+            }
+            addPremiumCompetitorGroups("LEFT", "premiumCompetitorLeft");
+            addPremiumCompetitorGroups("RIGHT", "premiumCompetitorRight");
         }
         return groups;
     }
@@ -2193,6 +2554,7 @@
         try {
             if (blendMode === "screen") layer.blendMode = BlendMode.SCREEN;
             else if (blendMode === "multiply") layer.blendMode = BlendMode.MULTIPLY;
+            else if (blendMode === "softlight") layer.blendMode = BlendMode.SOFTLIGHT;
             else layer.blendMode = BlendMode.NORMAL;
         } catch (_shapeBlendError) {}
         layer.move(group, ElementPlacement.INSIDE);
@@ -2216,6 +2578,11 @@
             // The dedicated ECCW PNG already contains every finished plate,
             // divider, border, and panel. Keep the semantic groups empty so
             // manifest/update compatibility is preserved without adding art.
+            return;
+        }
+        if (style.layoutPreset === ECCW_PREMIUM_LAYOUT_PRESET) {
+            // Premium polish is assembled only through its named, bounded,
+            // non-destructive groups; generic panel generation stays disabled.
             return;
         }
         var width = toPixels(document.width), height = toPixels(document.height);
@@ -2339,6 +2706,29 @@
             try { document.selection.deselect(); } catch (_maskDeselectError) {}
         }
     }
+    function addPolygonSelectionMask(document, layer, points) {
+        if (!(points instanceof Array) || points.length < 4) throw new Error("A premium panel mask requires at least four polygon points.");
+        app.activeDocument = document;
+        document.activeLayer = layer;
+        var selectionPoints = [];
+        for (var pointIndex = 0; pointIndex < points.length; pointIndex++) {
+            selectionPoints.push([
+                UnitValue(Number(points[pointIndex][0]), "px"),
+                UnitValue(Number(points[pointIndex][1]), "px")
+            ]);
+        }
+        document.selection.select(selectionPoints);
+        try {
+            var descriptor = new ActionDescriptor(), reference = new ActionReference();
+            descriptor.putClass(charIDToTypeID("Nw  "), charIDToTypeID("Chnl"));
+            reference.putEnumerated(charIDToTypeID("Chnl"), charIDToTypeID("Chnl"), charIDToTypeID("Msk "));
+            descriptor.putReference(charIDToTypeID("At  "), reference);
+            descriptor.putEnumerated(charIDToTypeID("Usng"), charIDToTypeID("UsrM"), charIDToTypeID("RvlS"));
+            executeAction(charIDToTypeID("Mk  "), descriptor, DialogModes.NO);
+        } finally {
+            try { document.selection.deselect(); } catch (_premiumMaskDeselectError) {}
+        }
+    }
     function layerHasUserMask(layer) {
         var layerId = safeLayerId(layer);
         if (!layerId) throw new Error("Cannot inspect a layer mask without a numeric layer ID.");
@@ -2394,6 +2784,37 @@
             throw new Error(role + " cutoff mask does not reveal exactly the canvas area above y=" + cutoffY + ".");
         }
     }
+    function verifyPremiumPanelMask(document, layer, role, geometry) {
+        if (!layerHasUserMask(layer)) throw new Error(role + " premium panel mask verification failed: user mask is missing.");
+        var expected = premiumGeometryBounds(geometry), actual;
+        try {
+            actual = activeUserMaskSelectionBounds(document, layer);
+        } catch (error) {
+            throw new Error(role + " premium panel mask verification failed while reading mask bounds: " + error.message);
+        }
+        var tolerance = 1;
+        if (
+            Math.abs(Number(actual.left) - Number(expected.left)) > tolerance ||
+            Math.abs(Number(actual.top) - Number(expected.top)) > tolerance ||
+            Math.abs(Number(actual.right) - Number(expected.right)) > tolerance ||
+            Math.abs(Number(actual.bottom) - Number(expected.bottom)) > tolerance
+        ) {
+            throw new Error(
+                role + " premium panel mask geometry mismatch: expected=[" +
+                [expected.left, expected.top, expected.right, expected.bottom].join(",") +
+                "] actual=[" + [actual.left, actual.top, actual.right, actual.bottom].join(",") +
+                "] tolerance=" + tolerance + "px."
+            );
+        }
+        return { expectedBounds: expected, measuredBounds: actual, tolerance: tolerance, pointCount: geometry.points.length, verified: true };
+    }
+    function applyMandatoryPremiumPanelMask(document, layer, role, unmaskedBounds, geometry) {
+        if (layerHasUserMask(layer)) throw new Error(role + " already has an unowned layer mask before premium panel masking.");
+        if (!unmaskedBounds) throw new Error(role + " has no measurable alpha-visible bounds before premium panel masking.");
+        if (!geometry || !(geometry.points instanceof Array)) throw new Error(role + " premium panel geometry is unavailable.");
+        addPolygonSelectionMask(document, layer, geometry.points);
+        return verifyPremiumPanelMask(document, layer, role, geometry);
+    }
     function measureBoundsBehindEccwMask(document, layer, role, cutoffY) {
         var directBounds = safeBoundsWithoutMask(layer);
         if (directBounds) return directBounds;
@@ -2426,6 +2847,24 @@
             throw new Error(role + " cutoff validation restored an invalid user mask.");
         }
         if (!unmaskedBounds) throw new Error("Could not measure alpha-visible bounds behind the user mask for " + role + ".");
+        return unmaskedBounds;
+    }
+    function measureBoundsBehindPremiumMask(document, layer, role, geometry) {
+        var directBounds = safeBoundsWithoutMask(layer);
+        if (directBounds) return directBounds;
+        var unmaskedBounds = null, restoreError = null;
+        deleteActiveUserMask(document, layer);
+        try {
+            unmaskedBounds = safeTransformBounds(layer);
+        } finally {
+            try { addPolygonSelectionMask(document, layer, geometry.points); }
+            catch (error) { restoreError = error; }
+        }
+        if (restoreError || !layerHasUserMask(layer)) {
+            throw new Error(role + " premium validation could not restore the mandatory polygonal user mask: " + (restoreError ? restoreError.message : "mask is missing"));
+        }
+        verifyPremiumPanelMask(document, layer, role, geometry);
+        if (!unmaskedBounds) throw new Error("Could not measure alpha-visible bounds behind the premium panel mask for " + role + ".");
         return unmaskedBounds;
     }
     function findLayersNamed(layers, name, matches) {
@@ -2545,8 +2984,9 @@
             restoreActiveDocument(previous);
         }
     }
-    function inspectEccwLogoSourceAlphaGeometry(file) {
+    function inspectEccwLogoSourceAlphaGeometry(file, roleLabel) {
         var previous = currentDocumentOrNull(), sourceDocument = null, sourceOwned = false, analysisDocument = null;
+        roleLabel = roleLabel || "showLogo";
         try {
             sourceDocument = findOpenDocumentForFile(file);
             if (!sourceDocument) {
@@ -2555,8 +2995,14 @@
             }
             app.activeDocument = sourceDocument;
             var sourceFullWidth = toPixels(sourceDocument.width);
+            var sourceFullHeight = toPixels(sourceDocument.height);
             if (!isFinite(sourceFullWidth) || sourceFullWidth <= 0) throw new Error("source document width is invalid");
-            analysisDocument = sourceDocument.duplicate("__ECCW_LOGO_ALPHA_INSPECTION__", true);
+            if (!isFinite(sourceFullHeight) || sourceFullHeight <= 0) throw new Error("source document height is invalid");
+            if (roleLabel === "showLogo") {
+                analysisDocument = sourceDocument.duplicate("__ECCW_LOGO_ALPHA_INSPECTION__", true);
+            } else {
+                analysisDocument = sourceDocument.duplicate("__ECCW_PREMIUM_ALPHA_INSPECTION__", true);
+            }
             app.activeDocument = analysisDocument;
             if (!analysisDocument.layers.length) throw new Error("source document has no visible layers");
             var analysisLayer = analysisDocument.layers[0], sourceBounds = null;
@@ -2565,20 +3011,169 @@
                     sourceBounds = { left: 0, top: 0, right: toPixels(analysisDocument.width), bottom: toPixels(analysisDocument.height) };
                 }
             } catch (_logoBackgroundInspectionError) {}
-            if (!sourceBounds) sourceBounds = activeLayerTransparencyBounds(analysisDocument, analysisLayer, "showLogo source");
+            if (!sourceBounds) sourceBounds = activeLayerTransparencyBounds(analysisDocument, analysisLayer, roleLabel + " source");
             var sourceAlphaVisibleWidth = Number(sourceBounds.right) - Number(sourceBounds.left);
+            var sourceAlphaVisibleHeight = Number(sourceBounds.bottom) - Number(sourceBounds.top);
             if (!isFinite(sourceAlphaVisibleWidth) || sourceAlphaVisibleWidth <= 0) throw new Error("source alpha-visible width is empty");
+            if (!isFinite(sourceAlphaVisibleHeight) || sourceAlphaVisibleHeight <= 0) throw new Error("source alpha-visible height is empty");
             return {
                 sourceFullWidth: sourceFullWidth,
-                sourceAlphaVisibleWidth: sourceAlphaVisibleWidth
+                sourceFullHeight: sourceFullHeight,
+                sourceAlphaBounds: {
+                    left: Number(sourceBounds.left), top: Number(sourceBounds.top),
+                    right: Number(sourceBounds.right), bottom: Number(sourceBounds.bottom)
+                },
+                sourceAlphaVisibleWidth: sourceAlphaVisibleWidth,
+                sourceAlphaVisibleHeight: sourceAlphaVisibleHeight
             };
         } catch (error) {
-            throw new Error("Could not inspect showLogo source alpha geometry: " + safeBaleStageErrorMessage(error));
+            throw new Error("Could not inspect " + roleLabel + " source alpha geometry: " + safeBaleStageErrorMessage(error));
         } finally {
             if (analysisDocument) try { analysisDocument.close(SaveOptions.DONOTSAVECHANGES); } catch (_logoAnalysisCloseError) {}
             if (sourceOwned && sourceDocument) try { sourceDocument.close(SaveOptions.DONOTSAVECHANGES); } catch (_logoSourceCloseError) {}
             restoreActiveDocument(previous);
         }
+    }
+    function calculatePremiumLogoSafeFit(sourceAlphaVisibleWidth, sourceAlphaVisibleHeight, safePadding, explicitWidth) {
+        sourceAlphaVisibleWidth = Number(sourceAlphaVisibleWidth);
+        sourceAlphaVisibleHeight = Number(sourceAlphaVisibleHeight);
+        safePadding = Number(safePadding);
+        if (
+            !isFinite(sourceAlphaVisibleWidth) || sourceAlphaVisibleWidth <= 0 ||
+            !isFinite(sourceAlphaVisibleHeight) || sourceAlphaVisibleHeight <= 0 ||
+            !isFinite(safePadding) || safePadding < 12 || safePadding > 16
+        ) throw new Error("Premium logo safe-fit inputs are invalid.");
+        var safeBounds = {
+            left: 720 + safePadding,
+            top: safePadding,
+            right: 1200 - safePadding,
+            bottom: 270 - safePadding
+        };
+        var alphaAspect = sourceAlphaVisibleWidth / sourceAlphaVisibleHeight;
+        var largestWidth = Math.min(safeBounds.right - safeBounds.left, (safeBounds.bottom - safeBounds.top) * alphaAspect);
+        var usesExplicitWidth = explicitWidth !== null && typeof explicitWidth !== "undefined";
+        var resolvedWidth = usesExplicitWidth ? Number(explicitWidth) : largestWidth;
+        var resolvedHeight = resolvedWidth / alphaAspect;
+        return {
+            safeBounds: safeBounds,
+            alphaAspect: alphaAspect,
+            largestSafeVisibleWidth: largestWidth,
+            visibleWidth: resolvedWidth,
+            visibleHeight: resolvedHeight,
+            fitResolution: usesExplicitWidth ? "explicit-width" : "largest-safe-fit",
+            contained:
+                resolvedWidth <= safeBounds.right - safeBounds.left + 0.0001 &&
+                resolvedHeight <= safeBounds.bottom - safeBounds.top + 0.0001
+        };
+    }
+    function resolvePremiumEccwAssetGeometry(folder, payload, resolved) {
+        var roles = ["competitorLeft", "competitorRight"];
+        for (var i = 0; i < roles.length; i++) {
+            var role = roles[i], direction = resolved[role];
+            var source = inspectEccwLogoSourceAlphaGeometry(childFile(folder, payload.assets[role]), role);
+            var panelBounds = premiumGeometryBounds(direction.panelGeometry);
+            // Treat scale as an art-direction preference within the mandatory
+            // panel-occupancy band instead of letting it push the silhouette
+            // outside the validated 90..94 percent composition.
+            var preferredOccupancy =
+                Number(resolved.composition.targetHeightOccupancy) +
+                ((Number(direction.scale) - 1) * 0.2);
+            var resolvedOccupancy = Math.max(0.9, Math.min(0.94, preferredOccupancy));
+            var targetHeight = panelBounds.height * resolvedOccupancy;
+            var appliedScaleFactor = targetHeight / Number(source.sourceAlphaVisibleHeight);
+            var targetWidth = Number(source.sourceAlphaVisibleWidth) * appliedScaleFactor;
+            var requestedGap = Number(resolved.composition.centerGap);
+            var centerX = role === "competitorLeft" ?
+                Number(direction.panelGeometry.dividerEdge) - requestedGap - (targetWidth / 2) :
+                Number(direction.panelGeometry.dividerEdge) + requestedGap + (targetWidth / 2);
+            centerX += Number(direction.xOffset);
+            var desiredTop = Number(direction.headTargetY) + Number(direction.yOffset);
+            var centerY = desiredTop + (targetHeight / 2);
+            var actualGap = role === "competitorLeft" ?
+                Number(direction.panelGeometry.dividerEdge) - (centerX + targetWidth / 2) :
+                (centerX - targetWidth / 2) - Number(direction.panelGeometry.dividerEdge);
+            if (resolvedOccupancy < 0.9 || resolvedOccupancy > 0.94) {
+                throw new Error(
+                    role + " premium planner occupancy is outside 0.90..0.94: actual=" +
+                    resolvedOccupancy + ". Adjust the per-competitor scale multiplier."
+                );
+            }
+            if (actualGap < 28 || actualGap > 38) {
+                throw new Error(
+                    role + " premium planner center gap is outside 28..38px: actual=" +
+                    actualGap + "px. Adjust xOffset or composition.centerGap."
+                );
+            }
+            direction.resolvedPlacement = {
+                sourceFullWidth: source.sourceFullWidth,
+                sourceFullHeight: source.sourceFullHeight,
+                sourceAlphaBounds: cloneJsonValue(source.sourceAlphaBounds),
+                sourceAlphaVisibleWidth: source.sourceAlphaVisibleWidth,
+                sourceAlphaVisibleHeight: source.sourceAlphaVisibleHeight,
+                appliedScaleFactor: appliedScaleFactor,
+                appliedScalePercent: appliedScaleFactor * 100,
+                centerX: centerX,
+                centerY: centerY,
+                visibleBounds: {
+                    left: centerX - targetWidth / 2,
+                    top: desiredTop,
+                    right: centerX + targetWidth / 2,
+                    bottom: desiredTop + targetHeight
+                },
+                targetHeightOccupancy: Number(resolved.composition.targetHeightOccupancy),
+                preferredHeightOccupancy: preferredOccupancy,
+                resolvedHeightOccupancy: resolvedOccupancy,
+                occupancyClamped: Math.abs(preferredOccupancy - resolvedOccupancy) > 0.0001,
+                requestedCenterGap: requestedGap,
+                resolvedCenterGap: actualGap,
+                panelBounds: cloneJsonValue(panelBounds)
+            };
+        }
+        var logo = resolved.topPlate.logo;
+        var logoSource = inspectEccwLogoSourceAlphaGeometry(childFile(folder, payload.assets.showLogo), "showLogo");
+        var safePadding = Number(logo.safePadding);
+        var requestedExplicitWidth = logo.fitMode === "explicit-width" && isFinite(Number(logo.visibleWidth));
+        var safeFit = calculatePremiumLogoSafeFit(
+            logoSource.sourceAlphaVisibleWidth,
+            logoSource.sourceAlphaVisibleHeight,
+            safePadding,
+            requestedExplicitWidth ? Number(logo.visibleWidth) : null
+        );
+        if (!safeFit.contained) {
+            throw new Error(
+                "Premium showLogo exceeds its safe top-plate area: expected within " +
+                (safeFit.safeBounds.right - safeFit.safeBounds.left) + "x" + (safeFit.safeBounds.bottom - safeFit.safeBounds.top) +
+                "px, resolved=" + safeFit.visibleWidth + "x" + safeFit.visibleHeight + "px."
+            );
+        }
+        logo.visibleWidth = safeFit.visibleWidth;
+        logo.visibleHeight = safeFit.visibleHeight;
+        logo.centerX = (safeFit.safeBounds.left + safeFit.safeBounds.right) / 2 + Number(logo.xOffset);
+        logo.centerY = (safeFit.safeBounds.top + safeFit.safeBounds.bottom) / 2 + Number(logo.yOffset);
+        logo.safeBounds = safeFit.safeBounds;
+        logo.resolvedVisibleBounds = {
+            left: logo.centerX - safeFit.visibleWidth / 2,
+            top: logo.centerY - safeFit.visibleHeight / 2,
+            right: logo.centerX + safeFit.visibleWidth / 2,
+            bottom: logo.centerY + safeFit.visibleHeight / 2
+        };
+        if (
+            logo.resolvedVisibleBounds.left < safeFit.safeBounds.left - 0.0001 ||
+            logo.resolvedVisibleBounds.top < safeFit.safeBounds.top - 0.0001 ||
+            logo.resolvedVisibleBounds.right > safeFit.safeBounds.right + 0.0001 ||
+            logo.resolvedVisibleBounds.bottom > safeFit.safeBounds.bottom + 0.0001
+        ) {
+            throw new Error(
+                "Premium showLogo offsets leave the top-plate safe area: safe=[" +
+                [safeFit.safeBounds.left, safeFit.safeBounds.top, safeFit.safeBounds.right, safeFit.safeBounds.bottom].join(",") +
+                "] resolved=[" +
+                [logo.resolvedVisibleBounds.left, logo.resolvedVisibleBounds.top, logo.resolvedVisibleBounds.right, logo.resolvedVisibleBounds.bottom].join(",") + "]."
+            );
+        }
+        logo.sourceGeometry = cloneJsonValue(logoSource);
+        logo.fitResolution = safeFit.fitResolution;
+        logo.largestSafeVisibleWidth = safeFit.largestSafeVisibleWidth;
+        return resolved;
     }
     function calculateEccwLogoScaleDiagnostics(sourceFullWidth, sourceAlphaVisibleWidth, requestedAlphaVisibleWidth, initialPlacedAlphaVisibleWidth, initialPlacementTransform, measuredWidthAfterNominalScale, correctionFactors, finalMeasuredAlphaVisibleWidth, verificationTolerance) {
         var values = [sourceFullWidth, sourceAlphaVisibleWidth, requestedAlphaVisibleWidth, initialPlacedAlphaVisibleWidth, measuredWidthAfterNominalScale, finalMeasuredAlphaVisibleWidth, verificationTolerance];
@@ -2666,6 +3261,8 @@
         }
         var expectedCenterX = 960 + Number(logoDirection.xOffset);
         var expectedCenterY = 92 + Number(logoDirection.yOffset);
+        if (own(logoDirection, "centerX")) expectedCenterX = Number(logoDirection.centerX);
+        if (own(logoDirection, "centerY")) expectedCenterY = Number(logoDirection.centerY);
         layer.translate(
             UnitValue(expectedCenterX - ((finalBounds.left + finalBounds.right) / 2), "px"),
             UnitValue(expectedCenterY - ((finalBounds.top + finalBounds.bottom) / 2), "px")
@@ -2730,6 +3327,51 @@
         }
         return placedBounds;
     }
+    function applyPremiumCompetitorPlacement(document, layer, role, direction, placementDiagnostics) {
+        app.activeDocument = document;
+        document.activeLayer = layer;
+        if (!direction.resolvedPlacement) throw new Error(role + " premium placement was not resolved from source alpha geometry.");
+        var initialBounds = safeTransformBounds(layer);
+        if (!initialBounds) throw new Error("Could not read initial alpha-visible bounds for premium " + role + ".");
+        var initial = rect(initialBounds), target = direction.resolvedPlacement.visibleBounds;
+        var targetHeight = Number(target.bottom) - Number(target.top);
+        if (initial.height <= 0 || targetHeight <= 0) throw new Error(role + " premium placement has empty source or target bounds.");
+        var relativeScale = targetHeight / initial.height;
+        layer.resize(relativeScale * 100, relativeScale * 100, AnchorPosition.MIDDLECENTER);
+        var resizedBounds = safeTransformBounds(layer);
+        if (!resizedBounds) throw new Error("Could not read resized alpha-visible bounds for premium " + role + ".");
+        layer.translate(
+            UnitValue(Number(direction.resolvedPlacement.centerX) - ((resizedBounds.left + resizedBounds.right) / 2), "px"),
+            UnitValue(Number(direction.resolvedPlacement.centerY) - ((resizedBounds.top + resizedBounds.bottom) / 2), "px")
+        );
+        var finalBounds = safeTransformBounds(layer);
+        if (!finalBounds) throw new Error("Could not read final alpha-visible bounds for premium " + role + ".");
+        var finalGeometry = rect(finalBounds), tolerance = 2;
+        if (
+            Math.abs(finalGeometry.centerX - Number(direction.resolvedPlacement.centerX)) > tolerance ||
+            Math.abs(finalGeometry.centerY - Number(direction.resolvedPlacement.centerY)) > tolerance ||
+            Math.abs(finalGeometry.height - targetHeight) > tolerance
+        ) {
+            throw new Error(
+                role + " premium alpha placement mismatch: expectedCenter=[" +
+                direction.resolvedPlacement.centerX + "," + direction.resolvedPlacement.centerY +
+                "] actualCenter=[" + finalGeometry.centerX + "," + finalGeometry.centerY +
+                "] expectedHeight=" + targetHeight + " actualHeight=" + finalGeometry.height +
+                " tolerance=" + tolerance + "px."
+            );
+        }
+        if (placementDiagnostics) {
+            placementDiagnostics[role] = {
+                source: cloneJsonValue(direction.resolvedPlacement.sourceAlphaBounds),
+                requested: cloneJsonValue(direction.resolvedPlacement),
+                initialPlacedBounds: measuredBoundsRecord(initialBounds),
+                finalAlphaVisibleBounds: measuredBoundsRecord(finalBounds),
+                relativePhotoshopScaleFactor: relativeScale,
+                tolerance: tolerance
+            };
+        }
+        return finalBounds;
+    }
     function deterministicEccwPlacement(role, requestedPlacement, warnings, artDirection) {
         var geometry = null;
         if (role === "competitorLeft" || role === "competitorRight") {
@@ -2774,12 +3416,34 @@
         return placement;
     }
     function applyDeterministicEccwPlacements(payload, warnings, artDirection) {
-        if (payload.style.layoutPreset !== ECCW_PANEL_LAYOUT_PRESET) return;
+        if (!isEccwLayoutPreset(payload.style.layoutPreset)) return;
         var requested = payload.placements || {}, resolved = {};
         var roles = ["competitorLeft", "competitorRight", "showLogo"];
         for (var i = 0; i < roles.length; i++) {
             var role = roles[i];
-            resolved[role] = deterministicEccwPlacement(role, own(requested, role) ? requested[role] : null, warnings, artDirection);
+            if (isPremiumEccwLayoutPreset(payload.style.layoutPreset)) {
+                if (own(requested, role) && requested[role].clippingMask === true) {
+                    warnings.push("Premium ECCW replaced requested clipping for " + role + " with its mandatory polygonal panel mask.");
+                }
+                if (role === "showLogo") {
+                    resolved[role] = {
+                        coordinateSpace: "pixels",
+                        x: Number(artDirection.topPlate.logo.centerX),
+                        y: Number(artDirection.topPlate.logo.centerY),
+                        fitMode: "keep-transform"
+                    };
+                } else {
+                    resolved[role] = {
+                        coordinateSpace: "pixels",
+                        x: Number(artDirection[role].resolvedPlacement.centerX),
+                        y: Number(artDirection[role].resolvedPlacement.centerY),
+                        fitMode: "keep-transform",
+                        nonGenerativeMask: true
+                    };
+                }
+            } else {
+                resolved[role] = deterministicEccwPlacement(role, own(requested, role) ? requested[role] : null, warnings, artDirection);
+            }
         }
         payload.placements = resolved;
     }
@@ -2809,6 +3473,183 @@
         setDescriptor.putObject(charIDToTypeID("T   "), stringIDToTypeID("layerEffects"), effects);
         executeAction(charIDToTypeID("setd"), setDescriptor, DialogModes.NO);
     }
+    function premiumGlowDescriptor(config, color, inner) {
+        var glow = new ActionDescriptor(), glowColor = new ActionDescriptor();
+        glow.putBoolean(charIDToTypeID("enab"), Boolean(config.enabled));
+        glow.putEnumerated(charIDToTypeID("Md  "), charIDToTypeID("BlnM"), inner ? charIDToTypeID("Scrn") : charIDToTypeID("Nrml"));
+        glow.putUnitDouble(charIDToTypeID("Opct"), charIDToTypeID("#Prc"), Number(config.opacity));
+        glow.putUnitDouble(charIDToTypeID("blur"), charIDToTypeID("#Pxl"), Number(config.blur));
+        if (inner) glow.putEnumerated(charIDToTypeID("glwS"), charIDToTypeID("IGSr"), charIDToTypeID("SrcE"));
+        glowColor.putDouble(charIDToTypeID("Rd  "), Number(color.red));
+        glowColor.putDouble(charIDToTypeID("Grn "), Number(color.green));
+        glowColor.putDouble(charIDToTypeID("Bl  "), Number(color.blue));
+        glow.putObject(charIDToTypeID("Clr "), charIDToTypeID("RGBC"), glowColor);
+        return glow;
+    }
+    function setPremiumCompetitorEffects(document, layer, direction) {
+        app.activeDocument = document;
+        document.activeLayer = layer;
+        var effects = readPreservableLayerEffects();
+        var shadowKey = stringIDToTypeID("dropShadow");
+        if (direction.depthShadow.enabled && Number(direction.depthShadow.opacity) > 0) {
+            var shadow = new ActionDescriptor(), shadowColor = new ActionDescriptor();
+            shadow.putBoolean(charIDToTypeID("enab"), true);
+            shadow.putEnumerated(charIDToTypeID("Md  "), charIDToTypeID("BlnM"), charIDToTypeID("Mltp"));
+            shadow.putUnitDouble(charIDToTypeID("Opct"), charIDToTypeID("#Prc"), Number(direction.depthShadow.opacity));
+            shadow.putUnitDouble(charIDToTypeID("Dstn"), charIDToTypeID("#Pxl"), Number(direction.depthShadow.distance));
+            shadow.putUnitDouble(charIDToTypeID("blur"), charIDToTypeID("#Pxl"), Number(direction.depthShadow.blur));
+            shadowColor.putDouble(charIDToTypeID("Rd  "), 12);
+            shadowColor.putDouble(charIDToTypeID("Grn "), 2);
+            shadowColor.putDouble(charIDToTypeID("Bl  "), 4);
+            shadow.putObject(charIDToTypeID("Clr "), charIDToTypeID("RGBC"), shadowColor);
+            effects.putObject(shadowKey, shadowKey, shadow);
+        } else if (effects.hasKey(shadowKey)) effects.erase(shadowKey);
+        var innerKey = charIDToTypeID("IrGl"), outerKey = charIDToTypeID("OrGl");
+        if (effects.hasKey(innerKey)) effects.erase(innerKey);
+        if (effects.hasKey(outerKey)) effects.erase(outerKey);
+        var scaleKey = stringIDToTypeID("scale");
+        if (!effects.hasKey(scaleKey)) effects.putUnitDouble(scaleKey, charIDToTypeID("#Prc"), 100);
+        var setDescriptor = new ActionDescriptor(), setReference = new ActionReference();
+        setReference.putProperty(charIDToTypeID("Prpr"), stringIDToTypeID("layerEffects"));
+        setReference.putEnumerated(charIDToTypeID("Lyr "), charIDToTypeID("Ordn"), charIDToTypeID("Trgt"));
+        setDescriptor.putReference(charIDToTypeID("null"), setReference);
+        setDescriptor.putObject(charIDToTypeID("T   "), stringIDToTypeID("layerEffects"), effects);
+        executeAction(charIDToTypeID("setd"), setDescriptor, DialogModes.NO);
+    }
+    function setPremiumRimLayerEffect(document, layer, config, color) {
+        app.activeDocument = document;
+        document.activeLayer = layer;
+        var effects = new ActionDescriptor(), outerKey = charIDToTypeID("OrGl");
+        effects.putObject(outerKey, outerKey, premiumGlowDescriptor(config, color, false));
+        effects.putUnitDouble(stringIDToTypeID("scale"), charIDToTypeID("#Prc"), 100);
+        var setDescriptor = new ActionDescriptor(), setReference = new ActionReference();
+        setReference.putProperty(charIDToTypeID("Prpr"), stringIDToTypeID("layerEffects"));
+        setReference.putEnumerated(charIDToTypeID("Lyr "), charIDToTypeID("Ordn"), charIDToTypeID("Trgt"));
+        setDescriptor.putReference(charIDToTypeID("null"), setReference);
+        setDescriptor.putObject(charIDToTypeID("T   "), stringIDToTypeID("layerEffects"), effects);
+        executeAction(charIDToTypeID("setd"), setDescriptor, DialogModes.NO);
+        try { layer.fillOpacity = 0; }
+        catch (_premiumRimFillOpacityError) {
+            var opacityDescriptor = new ActionDescriptor(), opacityReference = new ActionReference(), layerDescriptor = new ActionDescriptor();
+            opacityReference.putEnumerated(charIDToTypeID("Lyr "), charIDToTypeID("Ordn"), charIDToTypeID("Trgt"));
+            opacityDescriptor.putReference(charIDToTypeID("null"), opacityReference);
+            layerDescriptor.putUnitDouble(stringIDToTypeID("fillOpacity"), charIDToTypeID("#Prc"), 0);
+            opacityDescriptor.putObject(charIDToTypeID("T   "), charIDToTypeID("Lyr "), layerDescriptor);
+            executeAction(charIDToTypeID("setd"), opacityDescriptor, DialogModes.NO);
+        }
+    }
+    function createPremiumDirectionalRims(document, baseLayer, role, groups, direction, semanticReferences) {
+        var centerGroup = role === "competitorLeft" ? groups.premiumCompetitorLeftCenterRim : groups.premiumCompetitorRightCenterRim;
+        var outerGroup = role === "competitorLeft" ? groups.premiumCompetitorLeftOuterRim : groups.premiumCompetitorRightOuterRim;
+        if (direction.centerRim.enabled && Number(direction.centerRim.opacity) > 0) {
+            var centerLayer = baseLayer.duplicate(centerGroup, ElementPlacement.PLACEATBEGINNING);
+            centerLayer.name = role === "competitorLeft" ? "LEFT CENTER-FACING RED RIM" : "RIGHT CENTER-FACING RED RIM";
+            setPremiumRimLayerEffect(document, centerLayer, direction.centerRim, ECCW_VS_APPROVED_FILL);
+            addSelectionMask(document, centerGroup, role === "competitorLeft" ?
+                { left: 610, top: 160, right: 942, bottom: 850 } :
+                { left: 978, top: 160, right: 1310, bottom: 850 });
+            if (semanticReferences) semanticReferences[role + "CenterRim"] = centerLayer;
+        }
+        if (direction.outerRim.enabled && Number(direction.outerRim.opacity) > 0) {
+            var outerLayer = baseLayer.duplicate(outerGroup, ElementPlacement.PLACEATBEGINNING);
+            outerLayer.name = role === "competitorLeft" ? "LEFT OUTER NEUTRAL RIM" : "RIGHT OUTER NEUTRAL RIM";
+            setPremiumRimLayerEffect(document, outerLayer, direction.outerRim, { red: 225, green: 232, blue: 238 });
+            addSelectionMask(document, outerGroup, role === "competitorLeft" ?
+                { left: 130, top: 160, right: 520, bottom: 850 } :
+                { left: 1400, top: 160, right: 1790, bottom: 850 });
+            if (semanticReferences) semanticReferences[role + "OuterRim"] = outerLayer;
+        }
+    }
+    function createPremiumAtmosphere(document, group, role, direction) {
+        if (Number(direction.atmosphereOpacity) <= 0) return null;
+        var panelBounds = premiumGeometryBounds(direction.panelGeometry);
+        var layer = createRectangleFill(
+            document,
+            group,
+            role === "competitorLeft" ? "LEFT LOWER RED HAZE" : "RIGHT LOWER RED HAZE",
+            {
+                left: panelBounds.left,
+                top: Math.max(panelBounds.top, panelBounds.bottom - 210),
+                right: panelBounds.right,
+                bottom: panelBounds.bottom
+            },
+            ECCW_VS_APPROVED_FILL,
+            Number(direction.atmosphereOpacity),
+            "screen"
+        );
+        addPolygonSelectionMask(document, layer, direction.panelGeometry.points);
+        verifyPremiumPanelMask(document, layer, role + " atmosphere", direction.panelGeometry);
+        return layer;
+    }
+    function createGlobalBrightnessContrastAdjustment(document, group, name, contrast) {
+        app.activeDocument = document;
+        var makeDescriptor = new ActionDescriptor(), makeReference = new ActionReference();
+        makeReference.putClass(charIDToTypeID("AdjL"));
+        makeDescriptor.putReference(charIDToTypeID("null"), makeReference);
+        var usingDescriptor = new ActionDescriptor(), adjustmentDescriptor = new ActionDescriptor();
+        adjustmentDescriptor.putInteger(charIDToTypeID("Brgh"), 0);
+        adjustmentDescriptor.putInteger(charIDToTypeID("Cntr"), Number(contrast));
+        adjustmentDescriptor.putBoolean(stringIDToTypeID("useLegacy"), false);
+        usingDescriptor.putObject(charIDToTypeID("Type"), charIDToTypeID("BrgC"), adjustmentDescriptor);
+        makeDescriptor.putObject(charIDToTypeID("Usng"), charIDToTypeID("AdjL"), usingDescriptor);
+        executeAction(charIDToTypeID("Mk  "), makeDescriptor, DialogModes.NO);
+        var adjustment = document.activeLayer;
+        adjustment.name = name;
+        adjustment.move(group, ElementPlacement.INSIDE);
+        return adjustment;
+    }
+    function createPremiumGrainSmartObject(document, group, amount) {
+        if (Number(amount) <= 0) return null;
+        app.activeDocument = document;
+        var layer = document.artLayers.add();
+        layer.name = "MONOCHROMATIC GRAIN - SMART FILTER";
+        document.activeLayer = layer;
+        var gray = new SolidColor();
+        gray.rgb.red = 128; gray.rgb.green = 128; gray.rgb.blue = 128;
+        document.selection.selectAll();
+        try { document.selection.fill(gray, ColorBlendMode.NORMAL, 100, false); }
+        finally { try { document.selection.deselect(); } catch (_grainDeselectError) {} }
+        executeAction(stringIDToTypeID("newPlacedLayer"), undefined, DialogModes.NO);
+        layer = document.activeLayer;
+        if (!isSmartObject(layer)) throw new Error("Premium grain could not be converted to a Smart Object.");
+        layer.name = "MONOCHROMATIC GRAIN - SMART FILTER";
+        var noise = new ActionDescriptor();
+        noise.putUnitDouble(charIDToTypeID("Amnt"), charIDToTypeID("#Prc"), Math.max(0.1, Number(amount)));
+        noise.putEnumerated(charIDToTypeID("Dstr"), charIDToTypeID("Dstb"), charIDToTypeID("Gsn "));
+        noise.putBoolean(charIDToTypeID("Mnch"), true);
+        executeAction(charIDToTypeID("AdNs"), noise, DialogModes.NO);
+        try { layer.blendMode = BlendMode.SOFTLIGHT; } catch (_grainBlendError) {}
+        layer.opacity = Math.min(10, Number(amount));
+        layer.move(group, ElementPlacement.INSIDE);
+        return layer;
+    }
+    function createPremiumGlobalFinish(document, group, resolved, semantic) {
+        var finish = resolved.globalFinish;
+        if (!finish.enabled) return;
+        var contrastGroup = group.layerSets.add(); contrastGroup.name = "CONTRAST UNIFICATION";
+        var splitGroup = group.layerSets.add(); splitGroup.name = "RED BLACK SPLIT TONE";
+        var vignetteGroup = group.layerSets.add(); vignetteGroup.name = "SOFT EDGE VIGNETTE";
+        var grainGroup = group.layerSets.add(); grainGroup.name = "MONOCHROMATIC GRAIN";
+        var glowGroup = group.layerSets.add(); glowGroup.name = "CONTROLLED CENTER GLOW";
+        semantic.premiumGlobalContrast = createGlobalBrightnessContrastAdjustment(document, contrastGroup, "GLOBAL CONTRAST", Number(finish.contrast));
+        if (Number(finish.redBlackSplitTone) > 0) {
+            semantic.premiumSplitTone = createRectangleFill(document, splitGroup, "RED AMBIENT SIDES", {
+                left: 80, top: 300, right: 1840, bottom: 520
+            }, ECCW_VS_APPROVED_FILL, Number(finish.redBlackSplitTone) * 0.35, "screen");
+        }
+        if (Number(finish.vignette) > 0) {
+            semantic.premiumVignetteTop = createRectangleFill(document, vignetteGroup, "VIGNETTE TOP", { left: 0, top: 0, right: 1920, bottom: 90 }, { red: 0, green: 0, blue: 0 }, Number(finish.vignette), "multiply");
+            semantic.premiumVignetteBottom = createRectangleFill(document, vignetteGroup, "VIGNETTE BOTTOM", { left: 0, top: 990, right: 1920, bottom: 1080 }, { red: 0, green: 0, blue: 0 }, Number(finish.vignette), "multiply");
+            semantic.premiumVignetteLeft = createRectangleFill(document, vignetteGroup, "VIGNETTE LEFT", { left: 0, top: 90, right: 90, bottom: 990 }, { red: 0, green: 0, blue: 0 }, Number(finish.vignette), "multiply");
+            semantic.premiumVignetteRight = createRectangleFill(document, vignetteGroup, "VIGNETTE RIGHT", { left: 1830, top: 90, right: 1920, bottom: 990 }, { red: 0, green: 0, blue: 0 }, Number(finish.vignette), "multiply");
+        }
+        semantic.premiumGrain = createPremiumGrainSmartObject(document, grainGroup, Number(finish.grain));
+        if (Number(finish.centerGlow) > 0) {
+            semantic.premiumCenterGlow = createRectangleFill(document, glowGroup, "CENTER RED GLOW", {
+                left: 885, top: 390, right: 1035, bottom: 790
+            }, ECCW_VS_APPROVED_FILL, Number(finish.centerGlow), "screen");
+        }
+    }
     function createEccwBrightnessContrastAdjustment(document, group, targetLayer, role, direction) {
         if (!own(direction, "brightness") && !own(direction, "contrast")) return null;
         app.activeDocument = document;
@@ -2830,22 +3671,138 @@
         if (!adjustmentLayer.grouped) throw new Error("Photoshop did not clip the non-destructive brightness/contrast adjustment to " + role + ".");
         return adjustmentLayer;
     }
+    function createPremiumHueSaturationAdjustment(document, group, targetLayer, role, saturation) {
+        if (Math.abs(Number(saturation)) < 0.001) return null;
+        app.activeDocument = document;
+        document.activeLayer = targetLayer;
+        var makeDescriptor = new ActionDescriptor(), makeReference = new ActionReference();
+        makeReference.putClass(charIDToTypeID("AdjL"));
+        makeDescriptor.putReference(charIDToTypeID("null"), makeReference);
+        var usingDescriptor = new ActionDescriptor(), hueSaturation = new ActionDescriptor(), adjustments = new ActionList(), master = new ActionDescriptor();
+        hueSaturation.putEnumerated(stringIDToTypeID("presetKind"), stringIDToTypeID("presetKindType"), stringIDToTypeID("presetKindCustom"));
+        master.putInteger(charIDToTypeID("H   "), 0);
+        master.putInteger(charIDToTypeID("Strt"), Math.round(Number(saturation)));
+        master.putInteger(charIDToTypeID("Lght"), 0);
+        adjustments.putObject(charIDToTypeID("Hst2"), master);
+        hueSaturation.putList(charIDToTypeID("Adjs"), adjustments);
+        usingDescriptor.putObject(charIDToTypeID("Type"), charIDToTypeID("HStr"), hueSaturation);
+        makeDescriptor.putObject(charIDToTypeID("Usng"), charIDToTypeID("AdjL"), usingDescriptor);
+        executeAction(charIDToTypeID("Mk  "), makeDescriptor, DialogModes.NO);
+        var adjustmentLayer = document.activeLayer;
+        adjustmentLayer.name = MATCH_ASSET_LAYER_NAMES[role] + " - SHARED SATURATION";
+        adjustmentLayer.move(targetLayer, ElementPlacement.PLACEBEFORE);
+        adjustmentLayer.grouped = true;
+        if (!adjustmentLayer.grouped) throw new Error("Photoshop did not clip the premium saturation adjustment to " + role + ".");
+        return adjustmentLayer;
+    }
+    function createPremiumRedAmbientOverlay(document, group, targetLayer, role, direction, amount) {
+        if (Number(amount) <= 0) return null;
+        var panelBounds = premiumGeometryBounds(direction.panelGeometry);
+        var overlay = createRectangleFill(
+            document,
+            group,
+            role === "competitorLeft" ? "LEFT SHARED RED AMBIENT" : "RIGHT SHARED RED AMBIENT",
+            panelBounds,
+            ECCW_VS_APPROVED_FILL,
+            Math.min(8, Number(amount) * 0.35),
+            "softlight"
+        );
+        overlay.move(targetLayer, ElementPlacement.PLACEBEFORE);
+        document.activeLayer = overlay;
+        overlay.grouped = true;
+        if (!overlay.grouped) {
+            throw new Error("Photoshop did not clip the shared red ambient grade to " + role + ".");
+        }
+        return overlay;
+    }
+    function applyPremiumSmartSharpen(document, layer, role, amount) {
+        if (Number(amount) <= 0) return false;
+        app.activeDocument = document;
+        document.activeLayer = layer;
+        if (!isSmartObject(layer)) throw new Error(role + " must remain a Smart Object before premium sharpening.");
+        var sharpen = new ActionDescriptor();
+        sharpen.putUnitDouble(charIDToTypeID("Amnt"), charIDToTypeID("#Prc"), Number(amount));
+        sharpen.putUnitDouble(charIDToTypeID("Rds "), charIDToTypeID("#Pxl"), 0.5);
+        sharpen.putInteger(charIDToTypeID("Thsh"), 0);
+        executeAction(charIDToTypeID("UnsM"), sharpen, DialogModes.NO);
+        if (!isSmartObject(layer)) throw new Error(role + " lost Smart Object editability while applying non-destructive sharpening.");
+        return true;
+    }
     function placeMatchAsset(document, folder, role, fileName, groups, placement, accentColor, layoutPreset, semanticReferences, warnings, artDirection, placementDiagnostics) {
         var file = childFile(folder, fileName);
         if (!file.exists) throw new Error("Missing required asset: " + fileName);
         inspectCompetitorTransparencyBeforePlacement(file, role, warnings || []);
-        var logoSourceGeometry = layoutPreset === ECCW_PANEL_LAYOUT_PRESET && role === "showLogo" ?
+        var isLegacyEccwLogo = layoutPreset === ECCW_PANEL_LAYOUT_PRESET && role === "showLogo";
+        var isPremiumEccwLogo = layoutPreset === ECCW_PREMIUM_LAYOUT_PRESET && role === "showLogo";
+        var logoSourceGeometry = (isLegacyEccwLogo || isPremiumEccwLogo) ?
             inspectEccwLogoSourceAlphaGeometry(file) :
             null;
         var group = groupForAssetRole(groups, role), layer = placeFileAsSmartObject(document, file, group, MATCH_ASSET_LAYER_NAMES[role]);
-        var isEccwCoreAsset = layoutPreset === ECCW_PANEL_LAYOUT_PRESET && valueInList(role, ["competitorLeft", "competitorRight", "showLogo"]);
-        var targetBounds = isEccwCoreAsset ?
-            applyEccwVisibleContentPlacement(document, layer, role, artDirection, logoSourceGeometry, placementDiagnostics) :
-            applyLayerPlacement(document, layer, role, placement || null, "contain", layoutPreset);
+        var isEccwCoreAsset = isEccwLayoutPreset(layoutPreset) && valueInList(role, ["competitorLeft", "competitorRight", "showLogo"]);
+        var isPremium = isPremiumEccwLayoutPreset(layoutPreset);
+        var targetBounds;
+        if (isPremium && (role === "competitorLeft" || role === "competitorRight")) {
+            targetBounds = applyPremiumCompetitorPlacement(document, layer, role, artDirection[role], placementDiagnostics);
+        } else if (isEccwCoreAsset) {
+            targetBounds = applyEccwVisibleContentPlacement(document, layer, role, artDirection, logoSourceGeometry, placementDiagnostics);
+        } else {
+            targetBounds = applyLayerPlacement(document, layer, role, placement || null, "contain", layoutPreset);
+        }
         if (isEccwCoreAsset && (role === "competitorLeft" || role === "competitorRight")) {
-            applyMandatoryEccwCutoffMask(document, layer, role, targetBounds, Number(artDirection[role].cutoffY));
-            setEccwCompetitorShadow(document, layer, artDirection[role]);
-            createEccwBrightnessContrastAdjustment(document, group, layer, role, artDirection[role]);
+            if (isPremium) {
+                var gradeStrength = Number(artDirection[role].gradeStrength) / 100;
+                var gradeBrightness = Math.round(
+                    (-Number(artDirection.renderGrade.blackDepth) + Number(artDirection.renderGrade.highlightRecovery) * 0.5) *
+                    gradeStrength
+                );
+                var gradeContrast = Math.round(Number(artDirection.renderGrade.contrast) * gradeStrength);
+                var gradeSaturation = Number(artDirection.renderGrade.saturation) * gradeStrength;
+                var sharpenApplied = applyPremiumSmartSharpen(
+                    document,
+                    layer,
+                    role,
+                    Number(artDirection.renderGrade.sharpening) * gradeStrength
+                );
+                var maskDiagnostics = applyMandatoryPremiumPanelMask(document, layer, role, targetBounds, artDirection[role].panelGeometry);
+                if (placementDiagnostics && placementDiagnostics[role]) placementDiagnostics[role].panelMask = cloneJsonValue(maskDiagnostics);
+                setPremiumCompetitorEffects(document, layer, artDirection[role]);
+                createPremiumDirectionalRims(document, layer, role, groups, artDirection[role], semanticReferences);
+                createEccwBrightnessContrastAdjustment(document, group, layer, role, {
+                    brightness: gradeBrightness,
+                    contrast: gradeContrast
+                });
+                createPremiumHueSaturationAdjustment(document, group, layer, role, gradeSaturation);
+                var redAmbientLayer = createPremiumRedAmbientOverlay(
+                    document,
+                    group,
+                    layer,
+                    role,
+                    artDirection[role],
+                    Number(artDirection.renderGrade.redAmbient) * gradeStrength
+                );
+                if (semanticReferences && redAmbientLayer) {
+                    semanticReferences[role + "RedAmbient"] = redAmbientLayer;
+                }
+                if (placementDiagnostics && placementDiagnostics[role]) {
+                    placementDiagnostics[role].grade = {
+                        shared: cloneJsonValue(artDirection.renderGrade),
+                        perCompetitorStrength: Number(artDirection[role].gradeStrength),
+                        brightness: gradeBrightness,
+                        contrast: gradeContrast,
+                        saturation: gradeSaturation,
+                        redAmbient: Number(artDirection.renderGrade.redAmbient) * gradeStrength,
+                        redAmbientApplied: Boolean(redAmbientLayer),
+                        smartSharpenApplied: sharpenApplied
+                    };
+                }
+                var atmosphereGroup = role === "competitorLeft" ? groups.premiumCompetitorLeftAtmosphere : groups.premiumCompetitorRightAtmosphere;
+                var atmosphereLayer = createPremiumAtmosphere(document, atmosphereGroup, role, artDirection[role]);
+                if (semanticReferences && atmosphereLayer) semanticReferences[role + "Atmosphere"] = atmosphereLayer;
+            } else {
+                applyMandatoryEccwCutoffMask(document, layer, role, targetBounds, Number(artDirection[role].cutoffY));
+                setEccwCompetitorShadow(document, layer, artDirection[role]);
+                createEccwBrightnessContrastAdjustment(document, group, layer, role, artDirection[role]);
+            }
         }
         if (!isEccwCoreAsset && placement && own(placement, "clippingMask")) {
             try {
@@ -2944,6 +3901,45 @@
         return role;
     }
     function textPositionAndSize(role, width, height, layoutPreset, artDirection) {
+        if (layoutPreset === ECCW_PREMIUM_LAYOUT_PRESET) {
+            artDirection = artDirection || resolvedPremiumEccwArtDirection({});
+            if (role === "competitorLeftName" || role === "competitorRightName") {
+                var premiumPlateWidth = 765, premiumPlateHeight = 140, premiumNames = artDirection.nameplates;
+                var premiumTargetWidth = Math.min(
+                    premiumPlateWidth * Number(premiumNames.targetWidthOccupancy),
+                    premiumPlateWidth - (2 * Number(premiumNames.minimumHorizontalPadding))
+                );
+                return {
+                    x: role === "competitorLeftName" ? 515 : 1405,
+                    y: 938,
+                    size: Number(premiumNames.maximumFontSize),
+                    minimumFontSize: Number(premiumNames.minimumFontSize),
+                    tracking: Number(premiumNames.tracking),
+                    maxWidth: premiumTargetWidth,
+                    maxHeight: premiumPlateHeight * Number(premiumNames.targetHeightOccupancy),
+                    center: true
+                };
+            }
+            if (role === "matchTitle") return {
+                x: Number(artDirection.vs.hexagonCenter.x) + Number(artDirection.vs.xOffset),
+                y: Number(artDirection.vs.hexagonCenter.y) + Number(artDirection.vs.yOffset),
+                size: Number(artDirection.vs.fontSize),
+                minimumFontSize: 40,
+                maxWidth: 110,
+                maxHeight: 85,
+                center: true
+            };
+            if (role === "lowerCenterLabel") return {
+                x: 960,
+                y: 1034,
+                size: Number(artDirection.lowerCenter.fontSize),
+                minimumFontSize: 22,
+                tracking: Number(artDirection.lowerCenter.tracking),
+                maxWidth: 250,
+                maxHeight: 40,
+                center: true
+            };
+        }
         if (layoutPreset === ECCW_PANEL_LAYOUT_PRESET) {
             artDirection = artDirection || resolvedEccwArtDirection({});
             if (role === "competitorLeftName" || role === "competitorRightName") {
@@ -3050,12 +4046,13 @@
         app.activeDocument = document;
         document.activeLayer = layer;
         var effects = readPreservableLayerEffects();
+        var isPremium = Number(artDirection.version) === 15;
         var topTextConfig = role === "date" || role === "stipulation" ? artDirection.topPlate[role] : null;
         var shadowConfig = topTextConfig ? topTextConfig.shadow : {
             enabled: true,
-            opacity: 35,
-            distance: 4,
-            blur: 6
+            opacity: isPremium ? 24 : 35,
+            distance: isPremium ? 2 : 4,
+            blur: isPremium ? 4 : 6
         };
         var shadowKey = stringIDToTypeID("dropShadow");
         if (shadowConfig.enabled) {
@@ -3073,7 +4070,7 @@
         } else if (effects.hasKey(shadowKey)) {
             effects.erase(shadowKey);
         }
-        var fixedStrokeRole = role === "competitorLeftName" || role === "competitorRightName" || role === "matchTitle";
+        var fixedStrokeRole = !isPremium && (role === "competitorLeftName" || role === "competitorRightName" || role === "matchTitle");
         var configuredStroke = topTextConfig ? topTextConfig.stroke : null;
         var strokeEnabled = fixedStrokeRole || (configuredStroke && configuredStroke.enabled);
         var strokeKey = charIDToTypeID("FrFX");
@@ -3133,7 +4130,13 @@
             }
         } else warnings.push("No installed Photoshop font could be selected for " + role + ".");
         var color = new SolidColor(), rgb = role === "championship" ? style.metallicColor : style.accentColor;
-        if (style.layoutPreset === ECCW_PANEL_LAYOUT_PRESET && (role === "competitorLeftName" || role === "competitorRightName")) {
+        if (style.layoutPreset === ECCW_PREMIUM_LAYOUT_PRESET && (role === "competitorLeftName" || role === "competitorRightName")) {
+            rgb = artDirection.nameplates.fill;
+        } else if (style.layoutPreset === ECCW_PREMIUM_LAYOUT_PRESET && role === "matchTitle") {
+            rgb = artDirection.vs.fill;
+        } else if (style.layoutPreset === ECCW_PREMIUM_LAYOUT_PRESET && role === "lowerCenterLabel") {
+            rgb = artDirection.lowerCenter.fill;
+        } else if (style.layoutPreset === ECCW_PANEL_LAYOUT_PRESET && (role === "competitorLeftName" || role === "competitorRightName")) {
             rgb = { red: 255, green: 255, blue: 255 };
         } else if (style.layoutPreset === ECCW_PANEL_LAYOUT_PRESET && role === "matchTitle") {
             rgb = artDirection.vs.fill;
@@ -3143,8 +4146,17 @@
         color.rgb.red = rgb.red; color.rgb.green = rgb.green; color.rgb.blue = rgb.blue;
         textItem.color = color;
         layer.move(group, ElementPlacement.INSIDE);
+        if (style.layoutPreset === ECCW_PREMIUM_LAYOUT_PRESET && role === "matchTitle") {
+            var premiumInitialGlyphBounds = safeTransformBounds(layer);
+            artDirection.vs.initialGlyphBounds = premiumInitialGlyphBounds ? measuredBoundsRecord(premiumInitialGlyphBounds) : null;
+        }
         constrainLiveTextToGeometry(document, layer, role, geometry);
-        if (style.layoutPreset === ECCW_PANEL_LAYOUT_PRESET) setEccwTextEffects(document, layer, role, artDirection);
+        if (style.layoutPreset === ECCW_PREMIUM_LAYOUT_PRESET) {
+            if (role === "competitorLeftName" || role === "competitorRightName") layer.opacity = Number(artDirection.nameplates.opacity);
+            else if (role === "matchTitle") layer.opacity = Number(artDirection.vs.opacity);
+            else if (role === "lowerCenterLabel") layer.opacity = Number(artDirection.lowerCenter.opacity);
+        }
+        if (isEccwLayoutPreset(style.layoutPreset)) setEccwTextEffects(document, layer, role, artDirection);
         document.activeLayer = layer;
         return layer;
     }
@@ -3176,6 +4188,30 @@
                 role,
                 geometry
             );
+            setEccwTextEffects(document, layer, role, artDirection);
+        }
+    }
+    function applyApprovedPremiumEccwTextStyles(document, references, approvedFont, artDirection) {
+        var roles = ["competitorLeftName", "competitorRightName", "matchTitle", "lowerCenterLabel"];
+        for (var i = 0; i < roles.length; i++) {
+            var role = roles[i], layer = references[role];
+            if (!layer) continue;
+            if (!isTextLayer(layer)) throw new Error("Premium ECCW semantic role is no longer editable live text: " + role);
+            try { layer.textItem.font = approvedFont.postScriptName; }
+            catch (fontError) { throw new Error("Photoshop could not apply the approved ECCW font to " + role + ": " + fontError.message); }
+            var color = new SolidColor(), fill;
+            if (role === "matchTitle") fill = artDirection.vs.fill;
+            else if (role === "lowerCenterLabel") fill = artDirection.lowerCenter.fill;
+            else fill = artDirection.nameplates.fill;
+            color.rgb.red = fill.red; color.rgb.green = fill.green; color.rgb.blue = fill.blue;
+            layer.textItem.color = color;
+            if (role === "matchTitle") layer.opacity = Number(artDirection.vs.opacity);
+            else if (role === "lowerCenterLabel") layer.opacity = Number(artDirection.lowerCenter.opacity);
+            else layer.opacity = Number(artDirection.nameplates.opacity);
+            var geometry = textPositionAndSize(role, ECCW_PANEL_CANVAS_WIDTH, ECCW_PANEL_CANVAS_HEIGHT, ECCW_PREMIUM_LAYOUT_PRESET, artDirection);
+            layer.textItem.size = UnitValue(Math.max(8, geometry.size * 72 / Number(document.resolution)), "pt");
+            if (own(geometry, "tracking")) layer.textItem.tracking = Number(geometry.tracking);
+            constrainLiveTextToGeometry(document, layer, role, geometry);
             setEccwTextEffects(document, layer, role, artDirection);
         }
     }
@@ -3490,6 +4526,300 @@
             var textRole = requestedTextRoles[textIndex];
             if (!semantic[textRole] || !isTextLayer(semantic[textRole]) || !layerAndParentsVisible(semantic[textRole])) throw new Error("Requested ECCW live text is missing or hidden: " + textRole);
             assertLayerInsideCanvas(document, semantic[textRole], textRole);
+        }
+    }
+    function layerHasStrokeEffect(document, layer) {
+        app.activeDocument = document;
+        document.activeLayer = layer;
+        var effects = readPreservableLayerEffects();
+        var strokeKey = charIDToTypeID("FrFX");
+        return effects.hasKey(strokeKey) && effects.getObjectValue(strokeKey).getBoolean(charIDToTypeID("enab"));
+    }
+    function validatePremiumCompetitor(document, semantic, groups, role, direction) {
+        var layer = semantic[role];
+        assertEccwCompetitorVisible(document, layer, groups, role);
+        if (!isSmartObject(layer)) throw new Error(role + " premium validation expected a Smart Object.");
+        var mask = verifyPremiumPanelMask(document, layer, role, direction.panelGeometry);
+        var unmaskedBounds = rect(measureBoundsBehindPremiumMask(document, layer, role, direction.panelGeometry));
+        var panelBounds = premiumGeometryBounds(direction.panelGeometry);
+        var measuredOccupancy = unmaskedBounds.height / panelBounds.height;
+        var expectedOccupancy = Number(direction.resolvedPlacement.resolvedHeightOccupancy);
+        var measuredGap = role === "competitorLeft" ?
+            Number(direction.panelGeometry.dividerEdge) - unmaskedBounds.right :
+            unmaskedBounds.left - Number(direction.panelGeometry.dividerEdge);
+        var expectedGap = Number(direction.resolvedPlacement.resolvedCenterGap);
+        if (Math.abs(measuredOccupancy - expectedOccupancy) > 0.005) {
+            throw new Error(
+                role + " premium occupancy mismatch: expected=" + expectedOccupancy +
+                " actual=" + measuredOccupancy + " tolerance=0.005."
+            );
+        }
+        if (measuredGap < 28 || measuredGap > 38 || Math.abs(measuredGap - expectedGap) > 2) {
+            throw new Error(
+                role + " center-divider breathing-room mismatch: expected=" + expectedGap +
+                "px actual=" + measuredGap + "px allowed=28..38px tolerance=2px."
+            );
+        }
+        if (panelBounds.bottom > 850 || direction.panelGeometry.nameplateTop !== 850) {
+            throw new Error(role + " premium panel mask is not bounded above the nameplate.");
+        }
+        return {
+            unmaskedAlphaBounds: measuredBoundsRecord(unmaskedBounds),
+            panelBounds: cloneJsonValue(panelBounds),
+            occupancy: measuredOccupancy,
+            centerDividerGap: measuredGap,
+            mask: mask
+        };
+    }
+    function premiumGroupParentMatches(group, expectedParent) {
+        try {
+            return Boolean(group) && Boolean(expectedParent) &&
+                group.typename === "LayerSet" &&
+                safeLayerId(group.parent) === safeLayerId(expectedParent);
+        } catch (_premiumGroupParentError) {
+            return false;
+        }
+    }
+    function validatePremiumGroupStructure(document, semantic, groups) {
+        var topLevel = [
+            { key: "eventInformation", name: "80 - LOWER CENTER INFO" },
+            { key: "matchTitleGroup", name: "70 - LIVE TEXT" },
+            { key: "showLogoGroup", name: "60 - TOP PLATE" },
+            { key: "finishingEffects", name: "50 - GLOBAL FINISH" },
+            { key: "competitorRenders", name: "40 - COMPETITORS" },
+            { key: "templateBackground", name: "10 - TEMPLATE" }
+        ];
+        var structure = [], priorIndex = -1;
+        for (var topIndex = 0; topIndex < topLevel.length; topIndex++) {
+            var topDefinition = topLevel[topIndex], topGroup = groups[topDefinition.key];
+            var actualIndex = topLevelLayerIndex(document, topGroup);
+            if (
+                !topGroup || topGroup.typename !== "LayerSet" ||
+                String(topGroup.name) !== topDefinition.name || actualIndex < 0
+            ) {
+                throw new Error(
+                    "Premium PSD group validation failed for " + topDefinition.key +
+                    ': expected="' + topDefinition.name + '" actual="' +
+                    (topGroup ? String(topGroup.name) : "(missing)") + '".'
+                );
+            }
+            if (priorIndex >= 0 && actualIndex <= priorIndex) {
+                throw new Error(
+                    "Premium PSD top-level order mismatch at " + topDefinition.name +
+                    ": expected index greater than " + priorIndex + " actual=" + actualIndex + "."
+                );
+            }
+            priorIndex = actualIndex;
+            structure.push(topDefinition.name);
+        }
+        if (priorIndex !== document.layers.length - 1) {
+            throw new Error(
+                "Premium PSD template must be the bottom layer group: expected index=" +
+                (document.layers.length - 1) + " actual=" + priorIndex + "."
+            );
+        }
+
+        var competitorDefinitions = [
+            { role: "competitorLeft", key: "premiumCompetitorLeft", name: "LEFT COMPETITOR" },
+            { role: "competitorRight", key: "premiumCompetitorRight", name: "RIGHT COMPETITOR" }
+        ];
+        var childDefinitions = [
+            { suffix: "Atmosphere", name: "ATMOSPHERE" },
+            { suffix: "OuterRim", name: "OUTER RIM" },
+            { suffix: "CenterRim", name: "CENTER RIM" },
+            { suffix: "Grade", name: "GRADE" },
+            { suffix: "Base", name: "SMART OBJECT" },
+            { suffix: "PanelMask", name: "PANEL MASK (ON SMART OBJECT)" },
+            { suffix: "DepthShadow", name: "DEPTH SHADOW" }
+        ];
+        for (var competitorIndex = 0; competitorIndex < competitorDefinitions.length; competitorIndex++) {
+            var competitorDefinition = competitorDefinitions[competitorIndex];
+            var competitorGroup = groups[competitorDefinition.key];
+            if (
+                !premiumGroupParentMatches(competitorGroup, groups.competitorRenders) ||
+                String(competitorGroup.name) !== competitorDefinition.name
+            ) {
+                throw new Error(
+                    "Premium PSD competitor group validation failed for " +
+                    competitorDefinition.role + ': expected="' + competitorDefinition.name + '".'
+                );
+            }
+            structure.push("40 - COMPETITORS/" + competitorDefinition.name);
+            for (var childIndex = 0; childIndex < childDefinitions.length; childIndex++) {
+                var childDefinition = childDefinitions[childIndex];
+                var childGroup = groups[competitorDefinition.key + childDefinition.suffix];
+                if (
+                    !premiumGroupParentMatches(childGroup, competitorGroup) ||
+                    String(childGroup.name) !== childDefinition.name
+                ) {
+                    throw new Error(
+                        "Premium PSD effect-group validation failed for " +
+                        competitorDefinition.role + "/" + childDefinition.name + "."
+                    );
+                }
+                structure.push(
+                    "40 - COMPETITORS/" + competitorDefinition.name + "/" + childDefinition.name
+                );
+            }
+            if (
+                !semantic[competitorDefinition.role] ||
+                safeLayerId(semantic[competitorDefinition.role].parent) !==
+                    safeLayerId(groups[competitorDefinition.key + "Base"])
+            ) {
+                throw new Error(
+                    competitorDefinition.role +
+                    " Smart Object is not inside its deterministic SMART OBJECT group."
+                );
+            }
+        }
+        return structure;
+    }
+    function validatePremiumEccwPreviewLayout(document, semantic, assets, text, groups, approvedFont, artDirection, runtimeDiagnostics) {
+        if (toPixels(document.width) !== ECCW_PANEL_CANVAS_WIDTH || toPixels(document.height) !== ECCW_PANEL_CANVAS_HEIGHT) {
+            throw new Error("Premium ECCW validation requires an exact 1920x1080 canvas.");
+        }
+        var groupStructure = validatePremiumGroupStructure(document, semantic, groups);
+        var left = validatePremiumCompetitor(document, semantic, groups, "competitorLeft", artDirection.competitorLeft);
+        var right = validatePremiumCompetitor(document, semantic, groups, "competitorRight", artDirection.competitorRight);
+        var gradeRoles = ["competitorLeft", "competitorRight"];
+        for (var gradeRoleIndex = 0; gradeRoleIndex < gradeRoles.length; gradeRoleIndex++) {
+            var gradeRole = gradeRoles[gradeRoleIndex];
+            var expectedRedAmbient =
+                Number(artDirection.renderGrade.redAmbient) *
+                (Number(artDirection[gradeRole].gradeStrength) / 100);
+            var ambientLayer = semantic[gradeRole + "RedAmbient"];
+            if (
+                expectedRedAmbient > 0 &&
+                (!ambientLayer || !Boolean(ambientLayer.grouped) ||
+                    safeLayerId(ambientLayer.parent) !== safeLayerId(groups[gradeRole === "competitorLeft" ?
+                        "premiumCompetitorLeftBase" : "premiumCompetitorRightBase"]))
+            ) {
+                throw new Error(
+                    gradeRole + " shared red ambient grade validation failed: expected=" +
+                    expectedRedAmbient + " actual clipped layer=" + Boolean(ambientLayer) + "."
+                );
+            }
+        }
+        var logoBounds = assertAlphaVisibleLayerCenter(
+            document,
+            semantic.showLogo,
+            "showLogo",
+            Number(artDirection.topPlate.logo.centerX),
+            Number(artDirection.topPlate.logo.centerY),
+            ECCW_LOGO_WIDTH_VERIFICATION_TOLERANCE
+        );
+        var logoSafe = artDirection.topPlate.logo.safeBounds;
+        if (
+            logoBounds.left < Number(logoSafe.left) - 1 ||
+            logoBounds.top < Number(logoSafe.top) - 1 ||
+            logoBounds.right > Number(logoSafe.right) + 1 ||
+            logoBounds.bottom > Number(logoSafe.bottom) + 1
+        ) {
+            throw new Error(
+                "Premium showLogo safe-area validation failed: expected within [" +
+                [logoSafe.left, logoSafe.top, logoSafe.right, logoSafe.bottom].join(",") +
+                "] actual=[" + [logoBounds.left, logoBounds.top, logoBounds.right, logoBounds.bottom].join(",") + "]."
+            );
+        }
+        if (semantic.date || semantic.stipulation) throw new Error("Premium ECCW logo-only mode must not create date or top stipulation layers.");
+        var nameRoles = ["competitorLeftName", "competitorRightName"];
+        var nameBounds = {};
+        for (var nameIndex = 0; nameIndex < nameRoles.length; nameIndex++) {
+            var nameRole = nameRoles[nameIndex], expectedNameX = nameRole === "competitorLeftName" ? 515 : 1405;
+            nameBounds[nameRole] = assertLayerCenter(semantic[nameRole], nameRole, expectedNameX, 938, 2);
+            var nameColor = textColorChannels(semantic[nameRole], nameRole);
+            if (!eccwRgbEqual(nameColor, ECCW_VS_APPROVED_FILL, 1)) {
+                throw new Error(nameRole + " fill validation failed: expected=" + eccwRgbText(ECCW_VS_APPROVED_FILL) + " actual=" + eccwRgbText(nameColor) + ".");
+            }
+            if (layerHasStrokeEffect(document, semantic[nameRole])) throw new Error(nameRole + " must not have a white outline or any stroke.");
+            if (Math.abs(Number(semantic[nameRole].opacity) - Number(artDirection.nameplates.opacity)) > 0.1) {
+                throw new Error(nameRole + " texture integration opacity mismatch.");
+            }
+            if (nameBounds[nameRole].top < 850 || nameBounds[nameRole].bottom > 990) throw new Error(nameRole + " is outside its premium nameplate.");
+        }
+        var initialVsBounds = artDirection.vs.initialGlyphBounds ? cloneJsonValue(artDirection.vs.initialGlyphBounds) : null;
+        var vsBounds = assertLayerCenter(
+            semantic.matchTitle,
+            "matchTitle",
+            Number(artDirection.vs.hexagonCenter.x) + Number(artDirection.vs.xOffset),
+            Number(artDirection.vs.hexagonCenter.y) + Number(artDirection.vs.yOffset),
+            Number(artDirection.vs.centeringTolerance)
+        );
+        var vsColor = textColorChannels(semantic.matchTitle, "matchTitle");
+        if (!eccwRgbEqual(vsColor, ECCW_VS_APPROVED_FILL, 1)) {
+            throw new Error("Premium VS fill validation failed: expected=" + eccwRgbText(ECCW_VS_APPROVED_FILL) + " actual=" + eccwRgbText(vsColor) + ".");
+        }
+        if (layerHasStrokeEffect(document, semantic.matchTitle)) throw new Error("Premium VS must not have a white outline or any stroke.");
+        if (Math.abs(Number(semantic.matchTitle.opacity) - Number(artDirection.vs.opacity)) > 0.1) throw new Error("Premium VS texture integration opacity mismatch.");
+        var lowerBounds = null;
+        if (artDirection.lowerCenter.enabled) {
+            if (!semantic.lowerCenterLabel || !isTextLayer(semantic.lowerCenterLabel)) throw new Error("Premium lower-center FIRST TO THREE live text is missing.");
+            lowerBounds = assertLayerCenter(semantic.lowerCenterLabel, "lowerCenterLabel", 960, 1034, 2);
+            var lowerSafe = artDirection.lowerCenter.safeBounds;
+            if (
+                lowerBounds.left < lowerSafe.left || lowerBounds.top < lowerSafe.top ||
+                lowerBounds.right > lowerSafe.right || lowerBounds.bottom > lowerSafe.bottom
+            ) {
+                throw new Error(
+                    "Premium lower-center label exceeds its safe area: expected within [" +
+                    [lowerSafe.left, lowerSafe.top, lowerSafe.right, lowerSafe.bottom].join(",") +
+                    "] actual=[" + [lowerBounds.left, lowerBounds.top, lowerBounds.right, lowerBounds.bottom].join(",") + "]."
+                );
+            }
+            var lowerColor = textColorChannels(semantic.lowerCenterLabel, "lowerCenterLabel");
+            if (!eccwRgbEqual(lowerColor, artDirection.lowerCenter.fill, 1)) throw new Error("Premium lower-center label is not the resolved soft white.");
+            validatePremiumSoftWhite(lowerColor, "Premium lower-center measured fill");
+        }
+        var editableTextRoles = ["competitorLeftName", "competitorRightName", "matchTitle"];
+        if (artDirection.lowerCenter.enabled) editableTextRoles.push("lowerCenterLabel");
+        if (!approvedFont || !approvedFont.postScriptName) throw new Error("Premium ECCW approved font was not recorded.");
+        for (var textIndex = 0; textIndex < editableTextRoles.length; textIndex++) {
+            var editableRole = editableTextRoles[textIndex];
+            if (!isTextLayer(semantic[editableRole]) || !layerAndParentsVisible(semantic[editableRole])) throw new Error(editableRole + " is not visible editable live text.");
+            if (String(semantic[editableRole].textItem.font).toLowerCase() !== String(approvedFont.postScriptName).toLowerCase()) throw new Error(editableRole + " does not use the approved installed font.");
+        }
+        var generatedRectangleRoles = [
+            "premiumSplitTone", "premiumVignetteTop", "premiumVignetteBottom",
+            "premiumVignetteLeft", "premiumVignetteRight", "premiumCenterGlow",
+            "premiumLowerCenterMicroplate", "competitorLeftAtmosphere", "competitorRightAtmosphere"
+        ];
+        var maximumGeneratedArea = ECCW_PANEL_CANVAS_WIDTH * ECCW_PANEL_CANVAS_HEIGHT * 0.25;
+        for (var rectangleIndex = 0; rectangleIndex < generatedRectangleRoles.length; rectangleIndex++) {
+            var rectangleLayer = semantic[generatedRectangleRoles[rectangleIndex]];
+            if (!rectangleLayer) continue;
+            var rectangleBounds = safeTransformBounds(rectangleLayer);
+            if (rectangleBounds && rect(rectangleBounds).width * rect(rectangleBounds).height > maximumGeneratedArea) {
+                throw new Error("Premium generated rectangle " + generatedRectangleRoles[rectangleIndex] + " exceeds 25 percent of the canvas.");
+            }
+        }
+        if (runtimeDiagnostics) {
+            runtimeDiagnostics.premiumValidation = {
+                competitorLeft: left,
+                competitorRight: right,
+                logoBounds: measuredBoundsRecord(logoBounds),
+                nameBounds: { competitorLeftName: measuredBoundsRecord(nameBounds.competitorLeftName), competitorRightName: measuredBoundsRecord(nameBounds.competitorRightName) },
+                vs: {
+                    hexagonCenter: cloneJsonValue(artDirection.vs.hexagonCenter),
+                    initialGlyphBounds: initialVsBounds,
+                    finalGlyphBounds: measuredBoundsRecord(vsBounds),
+                    correction: {
+                        x: vsBounds.centerX - Number(artDirection.vs.hexagonCenter.x),
+                        y: vsBounds.centerY - Number(artDirection.vs.hexagonCenter.y)
+                    },
+                    centerDifference: {
+                        x: vsBounds.centerX - (Number(artDirection.vs.hexagonCenter.x) + Number(artDirection.vs.xOffset)),
+                        y: vsBounds.centerY - (Number(artDirection.vs.hexagonCenter.y) + Number(artDirection.vs.yOffset))
+                    },
+                    tolerance: Number(artDirection.vs.centeringTolerance),
+                    stroke: false,
+                    fill: cloneJsonValue(vsColor),
+                    opacity: Number(semantic.matchTitle.opacity),
+                    textureReveal: Number(artDirection.vs.textureReveal)
+                },
+                lowerCenterBounds: lowerBounds ? measuredBoundsRecord(lowerBounds) : null,
+                groupStructure: cloneJsonValue(groupStructure),
+                passed: true
+            };
         }
     }
     function safeBaleStageErrorMessage(error) {
@@ -3828,7 +5158,22 @@
             "framesAndPanels", "competitorRenders", "championshipAndBelt", "matchTitleGroup",
             "eventInformation", "showLogoGroup", "finishingEffects", "fullFrameAtmosphere",
             "lowerThirdPanel", "titleBacking", "showLogoPlate", "lowerLightStrip", "topBorder",
-            "bottomBorder", "finishingGlow"
+            "bottomBorder", "finishingGlow", "lowerCenterLabel",
+            "premiumGlobalContrast", "premiumSplitTone", "premiumGrain", "premiumVignetteTop",
+            "premiumVignetteBottom", "premiumVignetteLeft", "premiumVignetteRight",
+            "premiumCenterGlow", "premiumLowerCenterMicroplate",
+            "competitorLeftAtmosphere", "competitorRightAtmosphere",
+            "competitorLeftCenterRim", "competitorRightCenterRim",
+            "competitorLeftOuterRim", "competitorRightOuterRim",
+            "competitorLeftRedAmbient", "competitorRightRedAmbient",
+            "premiumCompetitorLeft", "premiumCompetitorLeftDepthShadow",
+            "premiumCompetitorLeftPanelMask", "premiumCompetitorLeftBase",
+            "premiumCompetitorLeftGrade", "premiumCompetitorLeftCenterRim",
+            "premiumCompetitorLeftOuterRim", "premiumCompetitorLeftAtmosphere",
+            "premiumCompetitorRight", "premiumCompetitorRightDepthShadow",
+            "premiumCompetitorRightPanelMask", "premiumCompetitorRightBase",
+            "premiumCompetitorRightGrade", "premiumCompetitorRightCenterRim",
+            "premiumCompetitorRightOuterRim", "premiumCompetitorRightAtmosphere"
         ];
         var i;
         for (i = 0; i < MATCH_ASSET_ROLES.length; i++) {
@@ -3996,6 +5341,45 @@
         if (own(value, "logoPlacement")) validateEccwLogoPlacementDiagnostics(value.logoPlacement);
         if (own(value, "vsFill")) validateEccwVsFillDiagnostics(value.vsFill);
     }
+    function validatePremiumManifestArtDirection(value) {
+        assertAllowedKeys(requirePlainObject(value, "premium manifest artDirection"), [
+            "mode", "presetVersion", "requested", "resolved", "installedFont",
+            "finalTextBounds", "competitorComposition", "panelMasks", "renderEffects",
+            "logoPlacement", "nameTypography", "vs", "lowerCenter", "globalFinish",
+            "groupStructure", "validation"
+        ], "premium manifest artDirection");
+        if (value.mode !== "premium-panel-integration" || Number(value.presetVersion) !== 15) throw new Error("Premium manifest artDirection mode/version is invalid.");
+        validatePremiumEccwArtDirection(value.requested, "premium manifest artDirection.requested");
+        assertAllowedKeys(requirePlainObject(value.resolved, "premium manifest artDirection.resolved"), [
+            "version", "compositionMode", "competitorLeft", "competitorRight",
+            "panelMasks", "composition", "nameplates", "topPlate", "vs",
+            "lowerCenter", "renderGrade", "globalFinish"
+        ], "premium manifest artDirection.resolved");
+        if (Number(value.resolved.version) !== 15 || value.resolved.compositionMode !== "premium-panel-integration") throw new Error("Premium resolved art direction is invalid.");
+        if (!eccwRgbEqual(value.resolved.nameplates.fill, ECCW_VS_APPROVED_FILL, 0)) throw new Error("Premium manifest names do not use canonical ECCW red.");
+        if (!eccwRgbEqual(value.resolved.vs.fill, ECCW_VS_APPROVED_FILL, 0) || value.resolved.vs.stroke !== false) throw new Error("Premium manifest VS styling is invalid.");
+        if (value.resolved.topPlate.mode !== "logo-only") throw new Error("Premium manifest top plate must remain logo-only.");
+        if (value.resolved.panelMasks.enabled !== true) throw new Error("Premium manifest panel masks must remain mandatory.");
+        assertAllowedKeys(requirePlainObject(value.installedFont, "premium manifest installedFont"), ["family", "style", "postScriptName"], "premium manifest installedFont");
+        requireString(value.installedFont.postScriptName, "premium manifest installed font PostScript name", 1, 160, false);
+        assertAllowedKeys(requirePlainObject(value.finalTextBounds, "premium manifest finalTextBounds"), ["competitorLeftName", "competitorRightName", "matchTitle", "lowerCenterLabel"], "premium manifest finalTextBounds");
+        var textRoles = ownKeys(value.finalTextBounds);
+        for (var textIndex = 0; textIndex < textRoles.length; textIndex++) validateRecordedBounds(value.finalTextBounds[textRoles[textIndex]], "premium manifest finalTextBounds." + textRoles[textIndex]);
+        var competitorRoles = ["competitorLeft", "competitorRight"];
+        assertAllowedKeys(requirePlainObject(value.competitorComposition, "premium manifest competitorComposition"), competitorRoles, "premium manifest competitorComposition");
+        assertAllowedKeys(requirePlainObject(value.panelMasks, "premium manifest panelMasks"), competitorRoles, "premium manifest panelMasks");
+        assertAllowedKeys(requirePlainObject(value.renderEffects, "premium manifest renderEffects"), competitorRoles, "premium manifest renderEffects");
+        for (var roleIndex = 0; roleIndex < competitorRoles.length; roleIndex++) {
+            var role = competitorRoles[roleIndex];
+            if (value.panelMasks[role].exists !== true) throw new Error("Premium manifest is missing the mandatory panel mask for " + role + ".");
+            if (value.renderEffects[role].baseSmartObject !== true || value.renderEffects[role].nonDestructive !== true) throw new Error("Premium manifest render treatment is not non-destructive for " + role + ".");
+        }
+        validateEccwLogoPlacementDiagnostics(value.logoPlacement);
+        if (!eccwRgbEqual(value.nameTypography.appliedFill, ECCW_VS_APPROVED_FILL, 0) || value.nameTypography.stroke !== false || value.nameTypography.containmentPassed !== true) throw new Error("Premium manifest name typography validation failed.");
+        if (!value.vs || value.vs.stroke !== false || !eccwRgbEqual(value.vs.fill, ECCW_VS_APPROVED_FILL, 1)) throw new Error("Premium manifest VS validation failed.");
+        if (!value.validation || value.validation.passed !== true) throw new Error("Premium manifest deterministic validation did not pass.");
+        if (!(value.groupStructure instanceof Array) || value.groupStructure.length < 7) throw new Error("Premium manifest group structure is incomplete.");
+    }
     function validateMatchCardManifest(manifest) {
         var allowed = [
             "schemaVersion", "outputPsdName", "outputPreviewName", "outputManifestName",
@@ -4028,8 +5412,11 @@
         requireString(manifest.baleCc.groupName, "manifest Bale CC groupName", 1, 255, false);
         validateAssetMap(manifest.assets, "manifest assets", false);
         validateTextMap(manifest.text, "manifest text");
-        if (manifest.layoutPreset === ECCW_PANEL_LAYOUT_PRESET) {
-            if (own(manifest, "artDirection")) validateManifestArtDirection(manifest.artDirection);
+        if (isEccwLayoutPreset(manifest.layoutPreset)) {
+            if (own(manifest, "artDirection")) {
+                if (isPremiumEccwLayoutPreset(manifest.layoutPreset)) validatePremiumManifestArtDirection(manifest.artDirection);
+                else validateManifestArtDirection(manifest.artDirection);
+            }
             if (Number(manifest.canvas.width) !== ECCW_PANEL_CANVAS_WIDTH || Number(manifest.canvas.height) !== ECCW_PANEL_CANVAS_HEIGHT) {
                 throw new Error("The ECCW manifest canvas must remain exactly 1920x1080.");
             }
@@ -4040,9 +5427,11 @@
             for (var eccwManifestAssetIndex = 0; eccwManifestAssetIndex < eccwManifestAssets.length; eccwManifestAssetIndex++) {
                 if (!valueInList(eccwManifestAssets[eccwManifestAssetIndex], allowedEccwManifestAssets)) throw new Error("The ECCW manifest contains an unsupported asset role.");
             }
-            var requiredEccwManifestText = ["competitorLeftName", "competitorRightName", "matchTitle", "date"];
+            var requiredEccwManifestText = isPremiumEccwLayoutPreset(manifest.layoutPreset) ?
+                ["competitorLeftName", "competitorRightName", "matchTitle"] :
+                ["competitorLeftName", "competitorRightName", "matchTitle", "date"];
             var allowedEccwManifestText = requiredEccwManifestText.slice(0);
-            allowedEccwManifestText.push("stipulation");
+            if (!isPremiumEccwLayoutPreset(manifest.layoutPreset)) allowedEccwManifestText.push("stipulation");
             var eccwManifestText = ownKeys(manifest.text);
             for (var eccwRequiredTextIndex = 0; eccwRequiredTextIndex < requiredEccwManifestText.length; eccwRequiredTextIndex++) {
                 if (!own(manifest.text, requiredEccwManifestText[eccwRequiredTextIndex])) throw new Error("The ECCW manifest is missing required live text.");
@@ -4051,7 +5440,7 @@
                 if (!valueInList(eccwManifestText[eccwManifestTextIndex], allowedEccwManifestText)) throw new Error("The ECCW manifest contains an unsupported text role.");
             }
             if (String(manifest.text.matchTitle).replace(/^\s+|\s+$/g, "").toUpperCase() !== "VS") throw new Error('The ECCW manifest matchTitle must remain "VS".');
-        } else if (own(manifest, "artDirection")) throw new Error("Only the ECCW manifest may record artDirection.");
+        } else if (own(manifest, "artDirection")) throw new Error("Only an ECCW manifest may record artDirection.");
         validateManifestPlacements(manifest.placements);
         assertAllowedKeys(requirePlainObject(manifest.semanticLayers, "manifest semanticLayers"), matchSemanticRoles(), "manifest semanticLayers");
         var semanticKeys = ownKeys(manifest.semanticLayers), seenSemanticIds = {}, seenSemanticPaths = {};
@@ -4145,6 +5534,87 @@
         record.vsFill = buildEccwVsFillDiagnostics(requested || {}, resolved, vsFillRuntimeDiagnostics || null);
         return record;
     }
+    function buildPremiumEccwArtDirectionRecord(document, semantic, groups, requested, resolved, approvedFont, runtimeDiagnostics) {
+        var textBounds = {}, textRoles = ["competitorLeftName", "competitorRightName", "matchTitle", "lowerCenterLabel"];
+        for (var textIndex = 0; textIndex < textRoles.length; textIndex++) {
+            var textRole = textRoles[textIndex];
+            if (!semantic[textRole]) continue;
+            var textLayerBounds = safeTransformBounds(semantic[textRole]);
+            if (!textLayerBounds) throw new Error("Could not record premium measured text bounds for " + textRole + ".");
+            textBounds[textRole] = measuredBoundsRecord(textLayerBounds);
+        }
+        var competitorRoles = ["competitorLeft", "competitorRight"], competitorComposition = {}, panelMasks = {}, renderEffects = {};
+        for (var roleIndex = 0; roleIndex < competitorRoles.length; roleIndex++) {
+            var role = competitorRoles[roleIndex], direction = resolved[role];
+            var measured = measureBoundsBehindPremiumMask(document, semantic[role], role, direction.panelGeometry);
+            competitorComposition[role] = {
+                requestedScaleMultiplier: requested[role] && own(requested[role], "scale") ? Number(requested[role].scale) : null,
+                requestedOffsets: {
+                    x: requested[role] && own(requested[role], "xOffset") ? Number(requested[role].xOffset) : 0,
+                    y: requested[role] && own(requested[role], "yOffset") ? Number(requested[role].yOffset) : 0
+                },
+                resolved: cloneJsonValue(direction.resolvedPlacement),
+                finalAlphaVisibleBounds: measuredBoundsRecord(measured)
+            };
+            panelMasks[role] = {
+                exists: layerHasUserMask(semantic[role]),
+                geometry: cloneJsonValue(direction.panelGeometry),
+                verification: runtimeDiagnostics.premiumValidation ? cloneJsonValue(runtimeDiagnostics.premiumValidation[role].mask) : null
+            };
+            renderEffects[role] = {
+                baseSmartObject: isSmartObject(semantic[role]),
+                depthShadow: cloneJsonValue(direction.depthShadow),
+                centerFacingRim: cloneJsonValue(direction.centerRim),
+                outerNeutralRim: cloneJsonValue(direction.outerRim),
+                gradeStrength: Number(direction.gradeStrength),
+                sharedGrade: cloneJsonValue(resolved.renderGrade),
+                appliedGrade: runtimeDiagnostics[role] && runtimeDiagnostics[role].grade ? cloneJsonValue(runtimeDiagnostics[role].grade) : null,
+                atmosphereOpacity: Number(direction.atmosphereOpacity),
+                nonDestructive: true
+            };
+        }
+        return {
+            mode: "premium-panel-integration",
+            presetVersion: 15,
+            requested: cloneJsonValue(requested || {}),
+            resolved: cloneJsonValue(resolved),
+            installedFont: {
+                family: String(approvedFont.family || ""),
+                style: String(approvedFont.style || ""),
+                postScriptName: String(approvedFont.postScriptName)
+            },
+            finalTextBounds: textBounds,
+            competitorComposition: competitorComposition,
+            panelMasks: panelMasks,
+            renderEffects: renderEffects,
+            logoPlacement: runtimeDiagnostics.showLogo ? cloneJsonValue(runtimeDiagnostics.showLogo) : null,
+            nameTypography: {
+                requestedFill: requested.nameplates && requested.nameplates.fill ? cloneJsonValue(requested.nameplates.fill) : null,
+                appliedFill: cloneJsonValue(resolved.nameplates.fill),
+                effectiveOpacity: Number(resolved.nameplates.opacity),
+                textureReveal: Number(resolved.nameplates.textureReveal),
+                stroke: false,
+                shadow: { enabled: true, opacity: 24, distance: 2, blur: 4 },
+                containmentPassed: true
+            },
+            vs: runtimeDiagnostics.premiumValidation ? cloneJsonValue(runtimeDiagnostics.premiumValidation.vs) : null,
+            lowerCenter: {
+                resolved: cloneJsonValue(resolved.lowerCenter),
+                finalBounds: runtimeDiagnostics.premiumValidation ? cloneJsonValue(runtimeDiagnostics.premiumValidation.lowerCenterBounds) : null,
+                containmentPassed: true
+            },
+            globalFinish: {
+                resolved: cloneJsonValue(resolved.globalFinish),
+                groupName: groups.finishingEffects.name,
+                editable: true,
+                belowCriticalLiveText: topLevelLayerIndex(document, groups.finishingEffects) > topLevelLayerIndex(document, groups.matchTitleGroup)
+            },
+            groupStructure: runtimeDiagnostics.premiumValidation ?
+                cloneJsonValue(runtimeDiagnostics.premiumValidation.groupStructure) :
+                [],
+            validation: runtimeDiagnostics.premiumValidation ? cloneJsonValue(runtimeDiagnostics.premiumValidation) : { passed: false }
+        };
+    }
     function buildCreateManifest(input, payload, semanticLayers, warnings, artDirectionRecord) {
         var baleCc = configuredBaleCc(input, true);
         var manifest = {
@@ -4183,12 +5653,16 @@
         var payload = validateCreateMatchCardPayload(input.payload || {}), folder = matchWorkingFolder(input);
         configuredBaleCc(input, true);
         var warnings = [];
-        var requestedArtDirection = payload.style.layoutPreset === ECCW_PANEL_LAYOUT_PRESET && own(payload, "artDirection") ? cloneJsonValue(payload.artDirection) : {};
-        var artDirection = payload.style.layoutPreset === ECCW_PANEL_LAYOUT_PRESET ? resolvedEccwArtDirection(payload.artDirection || {}) : null;
-        if (artDirection && own(artDirection.topPlate.stipulation, "text")) payload.text.stipulation = artDirection.topPlate.stipulation.text;
-        applyDeterministicEccwPlacements(payload, warnings, artDirection);
+        var isEccw = isEccwLayoutPreset(payload.style.layoutPreset), isPremium = isPremiumEccwLayoutPreset(payload.style.layoutPreset);
+        var requestedArtDirection = isEccw && own(payload, "artDirection") ? cloneJsonValue(payload.artDirection) : {};
+        var artDirection = isPremium ?
+            resolvedPremiumEccwArtDirection(payload.artDirection || {}) :
+            (isEccw ? resolvedEccwArtDirection(payload.artDirection || {}) : null);
+        if (!isPremium && artDirection && own(artDirection.topPlate.stipulation, "text")) payload.text.stipulation = artDirection.topPlate.stipulation.text;
         var stage = "preflight", preflight = preflightCreateMatchCard(input, payload);
         assertCreatePreflightReady(preflight);
+        if (isPremium) artDirection = resolvePremiumEccwAssetGeometry(folder, payload, artDirection);
+        applyDeterministicEccwPlacements(payload, warnings, artDirection);
         var outputPsd = childFile(folder, payload.outputPsdName), outputPreview = childFile(folder, payload.outputPreviewName), outputManifest = childFile(folder, payload.outputManifestName);
         var previous = currentDocumentOrNull(), document = null, previewDocument = null, attemptedOutputs = [], placementDiagnostics = {};
         var previousDialogs = null;
@@ -4214,6 +5688,7 @@
 
             stage = "create editable panels and finishing layers";
             createProceduralMatchLayers(document, groups, payload.style, semantic);
+            if (isPremium) createPremiumGlobalFinish(document, groups.finishingEffects, artDirection, semantic);
 
             stage = "place protected assets";
             var assetKeys = ownKeys(payload.assets);
@@ -4221,7 +5696,7 @@
                 var assetRole = assetKeys[assetIndex], placement = payload.placements && own(payload.placements, assetRole) ? payload.placements[assetRole] : null;
                 semantic[assetRole] = placeMatchAsset(document, folder, assetRole, payload.assets[assetRole], groups, placement, payload.style.accentColor, payload.style.layoutPreset, semantic, warnings, artDirection, placementDiagnostics);
                 if (
-                    payload.style.layoutPreset === ECCW_PANEL_LAYOUT_PRESET &&
+                    isEccw &&
                     (assetRole === "competitorLeft" || assetRole === "competitorRight")
                 ) {
                     assertEccwCompetitorVisible(document, semantic[assetRole], groups, assetRole);
@@ -4230,7 +5705,7 @@
 
             stage = "create editable text";
             var fontList = installedFonts(), approvedEccwFont = null, textKeys = ownKeys(payload.text);
-            if (payload.style.layoutPreset === ECCW_PANEL_LAYOUT_PRESET) {
+            if (isEccw) {
                 approvedEccwFont = resolveApprovedEccwFont(fontList);
                 recordApprovedEccwFont(payload.style, approvedEccwFont, warnings);
             }
@@ -4239,12 +5714,39 @@
                 var textGroup = textRole === "date" || textRole === "stipulation" || textRole === "time" || textRole === "venue" ? groups.eventInformation : (textRole === "championship" ? groups.championshipAndBelt : groups.matchTitleGroup);
                 semantic[textRole] = createEditableMatchText(document, textGroup, textRole, payload.text[textRole], payload.style, fontList, warnings, approvedEccwFont, artDirection);
             }
+            if (isPremium && artDirection.lowerCenter.enabled) {
+                if (artDirection.lowerCenter.microplate) {
+                    semantic.premiumLowerCenterMicroplate = createRectangleFill(
+                        document,
+                        groups.eventInformation,
+                        "LOWER CENTER MICROPLATE",
+                        artDirection.lowerCenter.safeBounds,
+                        { red: 4, green: 4, blue: 6 },
+                        42,
+                        "multiply"
+                    );
+                }
+                semantic.lowerCenterLabel = createEditableMatchText(
+                    document,
+                    groups.eventInformation,
+                    "lowerCenterLabel",
+                    artDirection.lowerCenter.text,
+                    payload.style,
+                    fontList,
+                    warnings,
+                    approvedEccwFont,
+                    artDirection
+                );
+            }
 
             stage = "validate deterministic preview";
-            validateEccwPreviewLayout(document, semantic, payload.style.layoutPreset, payload.assets, payload.text, groups, approvedEccwFont, artDirection, placementDiagnostics);
-            var artDirectionRecord = artDirection ?
-                buildEccwArtDirectionRecord(document, semantic, groups, requestedArtDirection, artDirection, approvedEccwFont, placementDiagnostics.showLogo, placementDiagnostics.vsFill) :
-                null;
+            if (isPremium) validatePremiumEccwPreviewLayout(document, semantic, payload.assets, payload.text, groups, approvedEccwFont, artDirection, placementDiagnostics);
+            else validateEccwPreviewLayout(document, semantic, payload.style.layoutPreset, payload.assets, payload.text, groups, approvedEccwFont, artDirection, placementDiagnostics);
+            var artDirectionRecord = artDirection ? (
+                isPremium ?
+                    buildPremiumEccwArtDirectionRecord(document, semantic, groups, requestedArtDirection, artDirection, approvedEccwFont, placementDiagnostics) :
+                    buildEccwArtDirectionRecord(document, semantic, groups, requestedArtDirection, artDirection, approvedEccwFont, placementDiagnostics.showLogo, placementDiagnostics.vsFill)
+            ) : null;
 
             stage = "save layered PSD";
             if (outputPsd.exists || outputPreview.exists || outputManifest.exists) throw new Error("An output appeared while the job was running; no output was overwritten.");
@@ -4278,6 +5780,7 @@
                 originalAssetsPreserved: true,
                 logoPlacement: placementDiagnostics.showLogo ? cloneJsonValue(placementDiagnostics.showLogo) : null,
                 vsFill: artDirectionRecord ? cloneJsonValue(artDirectionRecord.vsFill) : null,
+                premiumDiagnostics: isPremium ? cloneJsonValue(artDirectionRecord) : null,
                 warnings: warnings
             };
         } catch (error) {
@@ -4304,7 +5807,7 @@
     }
     function applyThemeChanges(document, references, styleChanges, themeColors, layoutPreset) {
         if (!styleChanges) return;
-        if (layoutPreset !== ECCW_PANEL_LAYOUT_PRESET) {
+        if (!isEccwLayoutPreset(layoutPreset)) {
             if (own(styleChanges, "primaryColor")) updateSolidFillSemantic(document, references, "titleBacking", themeColors.primaryColor);
             if (own(styleChanges, "secondaryColor")) {
                 updateSolidFillSemantic(document, references, "fullFrameAtmosphere", themeColors.secondaryColor);
@@ -4321,7 +5824,7 @@
             }
         }
         var textRoleIndex, textRole, textColor;
-        if (own(styleChanges, "accentColor") && layoutPreset !== ECCW_PANEL_LAYOUT_PRESET) {
+        if (own(styleChanges, "accentColor") && !isEccwLayoutPreset(layoutPreset)) {
             textColor = new SolidColor(); textColor.rgb.red = themeColors.accentColor.red; textColor.rgb.green = themeColors.accentColor.green; textColor.rgb.blue = themeColors.accentColor.blue;
             for (textRoleIndex = 0; textRoleIndex < MATCH_TEXT_ROLES.length; textRoleIndex++) {
                 textRole = MATCH_TEXT_ROLES[textRoleIndex];
@@ -4363,7 +5866,7 @@
     }
     function applyExistingAssetPlacement(document, references, groups, role, placementChanges, previousPlacement, accentColor, layoutPreset, artDirection, logoSourceGeometry, placementDiagnostics) {
         var layer = references[role], effective = mergedPlacement(previousPlacement, placementChanges);
-        var isEccwCoreAsset = layoutPreset === ECCW_PANEL_LAYOUT_PRESET && valueInList(role, ["competitorLeft", "competitorRight", "showLogo"]);
+        var isEccwCoreAsset = isEccwLayoutPreset(layoutPreset) && valueInList(role, ["competitorLeft", "competitorRight", "showLogo"]);
         if (isEccwCoreAsset) {
             var baseRole = role + "ClippingBase";
             if (references[baseRole] || Boolean(layer.grouped)) {
@@ -4374,9 +5877,16 @@
                 var hasExistingMask = layerHasUserMask(layer);
                 if (hasExistingMask && !priorMaskOwned) throw new Error("The existing mask for " + role + " is not manifest-owned; refusing to replace it.");
                 if (hasExistingMask) deleteActiveUserMask(document, layer);
-                var unmaskedBounds = applyEccwVisibleContentPlacement(document, layer, role, artDirection);
-                applyMandatoryEccwCutoffMask(document, layer, role, unmaskedBounds, Number(artDirection[role].cutoffY));
-                setEccwCompetitorShadow(document, layer, artDirection[role]);
+                var unmaskedBounds;
+                if (isPremiumEccwLayoutPreset(layoutPreset)) {
+                    unmaskedBounds = applyPremiumCompetitorPlacement(document, layer, role, artDirection[role], placementDiagnostics);
+                    applyMandatoryPremiumPanelMask(document, layer, role, unmaskedBounds, artDirection[role].panelGeometry);
+                    setPremiumCompetitorEffects(document, layer, artDirection[role]);
+                } else {
+                    unmaskedBounds = applyEccwVisibleContentPlacement(document, layer, role, artDirection);
+                    applyMandatoryEccwCutoffMask(document, layer, role, unmaskedBounds, Number(artDirection[role].cutoffY));
+                    setEccwCompetitorShadow(document, layer, artDirection[role]);
+                }
             } else {
                 applyEccwVisibleContentPlacement(document, layer, role, artDirection, logoSourceGeometry, placementDiagnostics);
                 setLayerEffectsForPlacement(document, layer, placementChanges, accentColor);
@@ -4452,8 +5962,9 @@
             throw new Error("The source document canvas or resolution no longer matches the manifest.");
         }
         var requiredGroups = ["templateBackground", "atmosphere", "framesAndPanels", "competitorRenders", "championshipAndBelt", "matchTitleGroup", "eventInformation", "showLogoGroup", "finishingEffects"];
-        if (manifest.layoutPreset === ECCW_PANEL_LAYOUT_PRESET) {
+        if (isEccwLayoutPreset(manifest.layoutPreset)) {
             requiredGroups = ["templateBackground", "competitorRenders", "matchTitleGroup", "eventInformation", "showLogoGroup"];
+            if (isPremiumEccwLayoutPreset(manifest.layoutPreset)) requiredGroups.push("finishingEffects");
         }
         for (var groupIndex = 0; groupIndex < requiredGroups.length; groupIndex++) {
             var groupRole = requiredGroups[groupIndex];
@@ -4478,6 +5989,9 @@
         for (var textIndex = 0; textIndex < textRoles.length; textIndex++) {
             var textRole = textRoles[textIndex];
             if (!sourceTargets[textRole] || !isTextLayer(sourceTargets[textRole].layer)) throw new Error("Manifest text role is no longer editable text: " + textRole);
+        }
+        if (isPremiumEccwLayoutPreset(manifest.layoutPreset) && manifest.artDirection.resolved.lowerCenter.enabled) {
+            if (!sourceTargets.lowerCenterLabel || !isTextLayer(sourceTargets.lowerCenterLabel.layer)) throw new Error("Premium lower-center text is no longer editable live text.");
         }
     }
     function buildUpdatedManifest(previousManifest, payload, semanticLayers, warnings) {
@@ -4508,7 +6022,7 @@
         if (previousManifest.outputManifestName.toLowerCase() !== payload.manifestFileName.toLowerCase()) throw new Error("The selected manifest filename does not match its recorded outputManifestName.");
         if (previousManifest.baleCc.packageFileName.toLowerCase() !== baleCc.packageFileName.toLowerCase() || previousManifest.baleCc.groupName !== baleCc.groupName) throw new Error("The manifest Bale CC identity does not match trusted local configuration.");
         if (payload.outputPsdName.toLowerCase() === previousManifest.outputPsdName.toLowerCase() || payload.outputPreviewName.toLowerCase() === previousManifest.outputPreviewName.toLowerCase()) throw new Error("Update outputs must use new versioned filenames.");
-        if (previousManifest.layoutPreset === ECCW_PANEL_LAYOUT_PRESET) {
+        if (isEccwLayoutPreset(previousManifest.layoutPreset)) {
             if (
                 own(payload.changes, "templateBackground") &&
                 String(payload.changes.templateBackground.fileName).toLowerCase() !== ECCW_PANEL_TEMPLATE_FILE_NAME.toLowerCase()
@@ -4524,7 +6038,10 @@
             if (own(payload.changes, "text")) {
                 var eccwUpdateTextRoles = ownKeys(payload.changes.text);
                 for (var eccwUpdateTextIndex = 0; eccwUpdateTextIndex < eccwUpdateTextRoles.length; eccwUpdateTextIndex++) {
-                    if (!valueInList(eccwUpdateTextRoles[eccwUpdateTextIndex], ["competitorLeftName", "competitorRightName", "matchTitle", "date"])) throw new Error("The ECCW panel preset update contains an unsupported text role.");
+                    var allowedUpdateTextRoles = isPremiumEccwLayoutPreset(previousManifest.layoutPreset) ?
+                        ["competitorLeftName", "competitorRightName", "matchTitle"] :
+                        ["competitorLeftName", "competitorRightName", "matchTitle", "date"];
+                    if (!valueInList(eccwUpdateTextRoles[eccwUpdateTextIndex], allowedUpdateTextRoles)) throw new Error("The ECCW panel preset update contains an unsupported text role.");
                 }
                 if (
                     own(payload.changes.text, "matchTitle") &&
@@ -4532,6 +6049,22 @@
                 ) {
                     throw new Error('The ECCW panel preset matchTitle must remain "VS".');
                 }
+                if (isPremiumEccwLayoutPreset(previousManifest.layoutPreset)) {
+                    if (
+                        own(payload.changes.text, "competitorLeftName") &&
+                        String(payload.changes.text.competitorLeftName).replace(/^\s+|\s+$/g, "").toUpperCase() !== "JORDAN SINNER"
+                    ) throw new Error('The premium ECCW competitorLeftName must remain "JORDAN SINNER".');
+                    if (
+                        own(payload.changes.text, "competitorRightName") &&
+                        String(payload.changes.text.competitorRightName).replace(/^\s+|\s+$/g, "").toUpperCase() !== "EDDIE SLAYER"
+                    ) throw new Error('The premium ECCW competitorRightName must remain "EDDIE SLAYER".');
+                }
+            }
+            if (isPremiumEccwLayoutPreset(previousManifest.layoutPreset) && own(payload.changes, "placements")) {
+                throw new Error("Premium ECCW placement is geometry-derived; create a new premium request to change art-direction controls.");
+            }
+            if (isPremiumEccwLayoutPreset(previousManifest.layoutPreset) && own(payload.changes, "assets")) {
+                throw new Error("Premium ECCW protected-asset changes require a new premium create so all alpha-derived rim, mask, and composition geometry can be re-resolved.");
             }
         }
         if (own(payload.changes, "placements")) {
@@ -4562,9 +6095,25 @@
         var previous = currentDocumentOrNull(), sourceDocument = null, sourceOwned = false, workingDocument = null, previewDocument = null, attemptedOutputs = [], warnings = [], placementDiagnostics = {};
         var approvedEccwFont = null;
         var updateRequestedArtDirection = previousManifest.artDirection ? cloneJsonValue(previousManifest.artDirection.requested) : {};
-        var updateArtDirection = previousManifest.layoutPreset === ECCW_PANEL_LAYOUT_PRESET ?
-            (previousManifest.artDirection ? resolvedEccwArtDirection(previousManifest.artDirection.resolved) : resolvedEccwArtDirection({})) :
-            null;
+        var updateArtDirection = null;
+        if (previousManifest.layoutPreset === ECCW_PANEL_LAYOUT_PRESET) {
+            updateArtDirection = previousManifest.artDirection ? resolvedEccwArtDirection(previousManifest.artDirection.resolved) : resolvedEccwArtDirection({});
+        } else if (isPremiumEccwLayoutPreset(previousManifest.layoutPreset)) {
+            updateArtDirection = resolvedPremiumEccwArtDirection(updateRequestedArtDirection || {});
+            var effectiveGeometryAssets = cloneJsonValue(previousManifest.assets);
+            if (own(payload.changes, "assets")) mergeOwn(effectiveGeometryAssets, payload.changes.assets);
+            updateArtDirection = resolvePremiumEccwAssetGeometry(folder, { assets: effectiveGeometryAssets }, updateArtDirection);
+            placementDiagnostics.showLogo = cloneJsonValue(previousManifest.artDirection.logoPlacement);
+            var preservedPremiumRoles = ["competitorLeft", "competitorRight"];
+            for (var preservedPremiumIndex = 0; preservedPremiumIndex < preservedPremiumRoles.length; preservedPremiumIndex++) {
+                var preservedPremiumRole = preservedPremiumRoles[preservedPremiumIndex];
+                placementDiagnostics[preservedPremiumRole] = {
+                    grade: previousManifest.artDirection.renderEffects[preservedPremiumRole].appliedGrade ?
+                        cloneJsonValue(previousManifest.artDirection.renderEffects[preservedPremiumRole].appliedGrade) :
+                        null
+                };
+            }
+        }
         if (previousManifest.layoutPreset === ECCW_PANEL_LAYOUT_PRESET) {
             if (!own(payload.changes, "placements")) payload.changes.placements = {};
             var normalizedEccwPlacementRoles = ["competitorLeft", "competitorRight", "showLogo"];
@@ -4642,9 +6191,26 @@
                 showLogoGroup: references.showLogoGroup,
                 finishingEffects: references.finishingEffects
             };
-            var requiredGroupRoles = previousManifest.layoutPreset === ECCW_PANEL_LAYOUT_PRESET ?
+            if (isPremiumEccwLayoutPreset(previousManifest.layoutPreset)) {
+                var premiumGroupRoles = [
+                    "premiumCompetitorLeft", "premiumCompetitorLeftDepthShadow",
+                    "premiumCompetitorLeftPanelMask", "premiumCompetitorLeftBase",
+                    "premiumCompetitorLeftGrade", "premiumCompetitorLeftCenterRim",
+                    "premiumCompetitorLeftOuterRim", "premiumCompetitorLeftAtmosphere",
+                    "premiumCompetitorRight", "premiumCompetitorRightDepthShadow",
+                    "premiumCompetitorRightPanelMask", "premiumCompetitorRightBase",
+                    "premiumCompetitorRightGrade", "premiumCompetitorRightCenterRim",
+                    "premiumCompetitorRightOuterRim", "premiumCompetitorRightAtmosphere"
+                ];
+                for (var premiumGroupIndex = 0; premiumGroupIndex < premiumGroupRoles.length; premiumGroupIndex++) {
+                    var premiumGroupRole = premiumGroupRoles[premiumGroupIndex];
+                    groups[premiumGroupRole] = references[premiumGroupRole];
+                }
+            }
+            var requiredGroupRoles = isEccwLayoutPreset(previousManifest.layoutPreset) ?
                 ["templateBackground", "competitorRenders", "matchTitleGroup", "eventInformation", "showLogoGroup"] :
                 ["templateBackground", "atmosphere", "framesAndPanels", "competitorRenders", "championshipAndBelt", "matchTitleGroup", "eventInformation", "showLogoGroup", "finishingEffects"];
+            if (isPremiumEccwLayoutPreset(previousManifest.layoutPreset)) requiredGroupRoles.push("finishingEffects");
             for (var requiredGroupIndex = 0; requiredGroupIndex < requiredGroupRoles.length; requiredGroupIndex++) {
                 var requiredGroupRole = requiredGroupRoles[requiredGroupIndex];
                 if (!groups[requiredGroupRole] || groups[requiredGroupRole].typename !== "LayerSet") throw new Error("Manifest semantic group is unavailable: " + requiredGroupRole);
@@ -4665,7 +6231,7 @@
                     else currentStyle[changedStyleKeys[i]] = cloneJsonValue(payload.changes.style[changedStyleKeys[i]]);
                 }
             }
-            if (previousManifest.layoutPreset === ECCW_PANEL_LAYOUT_PRESET) {
+            if (isEccwLayoutPreset(previousManifest.layoutPreset)) {
                 approvedEccwFont = resolveApprovedEccwFont(installedFonts());
                 recordApprovedEccwFont(currentStyle, approvedEccwFont, warnings);
                 if (!own(payload.changes, "style")) payload.changes.style = {};
@@ -4686,6 +6252,12 @@
                     var assetRole = changedAssetKeys[i], assetFile = childFile(folder, payload.changes.assets[assetRole]);
                     var placement = own(payload.changes, "placements") && own(payload.changes.placements, assetRole) ? payload.changes.placements[assetRole] : null;
                     if (
+                        isPremiumEccwLayoutPreset(previousManifest.layoutPreset) &&
+                        valueInList(assetRole, ["competitorLeft", "competitorRight", "showLogo"])
+                    ) {
+                        placement = own(previousManifest.placements, assetRole) ? cloneJsonValue(previousManifest.placements[assetRole]) : { fitMode: "keep-transform" };
+                    }
+                    if (
                         previousManifest.layoutPreset === ECCW_PANEL_LAYOUT_PRESET &&
                         (assetRole === "competitorLeft" || assetRole === "competitorRight" || assetRole === "showLogo")
                     ) {
@@ -4694,7 +6266,7 @@
                     if (references[assetRole]) {
                         if (!isSmartObject(references[assetRole])) throw new Error("Semantic asset role is not a Smart Object: " + assetRole);
                         inspectCompetitorTransparencyBeforePlacement(assetFile, assetRole, warnings);
-                        var replacementLogoSourceGeometry = previousManifest.layoutPreset === ECCW_PANEL_LAYOUT_PRESET && assetRole === "showLogo" ?
+                        var replacementLogoSourceGeometry = isEccwLayoutPreset(previousManifest.layoutPreset) && assetRole === "showLogo" ?
                             inspectEccwLogoSourceAlphaGeometry(assetFile) :
                             null;
                         workingDocument.activeLayer = references[assetRole];
@@ -4717,7 +6289,7 @@
                     if (own(payload.changes, "assets") && own(payload.changes.assets, role)) continue;
                     if (!references[role] || !isSmartObject(references[role])) throw new Error("Placement role is not an existing Smart Object: " + role);
                     var previousPlacement = own(previousManifest.placements, role) ? previousManifest.placements[role] : null;
-                    var existingLogoSourceGeometry = previousManifest.layoutPreset === ECCW_PANEL_LAYOUT_PRESET && role === "showLogo" ?
+                    var existingLogoSourceGeometry = isEccwLayoutPreset(previousManifest.layoutPreset) && role === "showLogo" ?
                         inspectEccwLogoSourceAlphaGeometry(childFile(folder, previousManifest.assets.showLogo)) :
                         null;
                     applyExistingAssetPlacement(workingDocument, references, groups, role, payload.changes.placements[role], previousPlacement, currentStyle.accentColor, previousManifest.layoutPreset, updateArtDirection, existingLogoSourceGeometry, placementDiagnostics);
@@ -4732,12 +6304,12 @@
                     if (references[role]) {
                         if (!isTextLayer(references[role])) throw new Error("Semantic text role is not editable text: " + role);
                         applyContentOnlyTextEdit(references[role], payload.changes.text[role]);
-                        if (previousManifest.layoutPreset === ECCW_PANEL_LAYOUT_PRESET) {
+                        if (isEccwLayoutPreset(previousManifest.layoutPreset)) {
                             constrainLiveTextToGeometry(
                                 workingDocument,
                                 references[role],
                                 role,
-                                textPositionAndSize(role, ECCW_PANEL_CANVAS_WIDTH, ECCW_PANEL_CANVAS_HEIGHT, ECCW_PANEL_LAYOUT_PRESET, updateArtDirection)
+                                textPositionAndSize(role, ECCW_PANEL_CANVAS_WIDTH, ECCW_PANEL_CANVAS_HEIGHT, previousManifest.layoutPreset, updateArtDirection)
                             );
                         }
                     } else {
@@ -4759,6 +6331,8 @@
             }
             if (previousManifest.layoutPreset === ECCW_PANEL_LAYOUT_PRESET) {
                 applyApprovedEccwTextStyles(workingDocument, references, approvedEccwFont, updateArtDirection);
+            } else if (isPremiumEccwLayoutPreset(previousManifest.layoutPreset)) {
+                applyApprovedPremiumEccwTextStyles(workingDocument, references, approvedEccwFont, updateArtDirection);
             }
             stage = "update visibility";
             if (own(payload.changes, "visibility")) applyVisibilityChanges(references, payload.changes.visibility);
@@ -4767,7 +6341,11 @@
             var effectivePreviewAssets = cloneJsonValue(previousManifest.assets), effectivePreviewText = cloneJsonValue(previousManifest.text);
             if (own(payload.changes, "assets")) mergeOwn(effectivePreviewAssets, payload.changes.assets);
             if (own(payload.changes, "text")) mergeOwn(effectivePreviewText, payload.changes.text);
-            validateEccwPreviewLayout(workingDocument, references, previousManifest.layoutPreset, effectivePreviewAssets, effectivePreviewText, groups, approvedEccwFont, updateArtDirection, placementDiagnostics);
+            if (isPremiumEccwLayoutPreset(previousManifest.layoutPreset)) {
+                validatePremiumEccwPreviewLayout(workingDocument, references, effectivePreviewAssets, effectivePreviewText, groups, approvedEccwFont, updateArtDirection, placementDiagnostics);
+            } else {
+                validateEccwPreviewLayout(workingDocument, references, previousManifest.layoutPreset, effectivePreviewAssets, effectivePreviewText, groups, approvedEccwFont, updateArtDirection, placementDiagnostics);
+            }
 
             stage = "save versioned layered PSD";
             if (outputPsd.exists || outputPreview.exists || outputManifest.exists) throw new Error("An update output appeared while the job was running; no output was overwritten.");
@@ -4787,20 +6365,30 @@
             var semanticLayers = captureSemanticLayers(workingDocument, references);
             var updatedManifest = buildUpdatedManifest(previousManifest, payload, semanticLayers, warnings);
             if (updateArtDirection) {
-                updatedManifest.artDirection = buildEccwArtDirectionRecord(
-                    workingDocument,
-                    references,
-                    groups,
-                    updateRequestedArtDirection,
-                    updateArtDirection,
-                    approvedEccwFont,
-                    placementDiagnostics.showLogo || (
-                        previousManifest.artDirection && previousManifest.artDirection.logoPlacement ?
-                            previousManifest.artDirection.logoPlacement :
-                            null
-                    ),
-                    placementDiagnostics.vsFill
-                );
+                if (isPremiumEccwLayoutPreset(previousManifest.layoutPreset)) {
+                    if (!placementDiagnostics.showLogo && previousManifest.artDirection.logoPlacement) {
+                        placementDiagnostics.showLogo = cloneJsonValue(previousManifest.artDirection.logoPlacement);
+                    }
+                    updatedManifest.artDirection = buildPremiumEccwArtDirectionRecord(
+                        workingDocument, references, groups, updateRequestedArtDirection,
+                        updateArtDirection, approvedEccwFont, placementDiagnostics
+                    );
+                } else {
+                    updatedManifest.artDirection = buildEccwArtDirectionRecord(
+                        workingDocument,
+                        references,
+                        groups,
+                        updateRequestedArtDirection,
+                        updateArtDirection,
+                        approvedEccwFont,
+                        placementDiagnostics.showLogo || (
+                            previousManifest.artDirection && previousManifest.artDirection.logoPlacement ?
+                                previousManifest.artDirection.logoPlacement :
+                                null
+                        ),
+                        placementDiagnostics.vsFill
+                    );
+                }
             }
             validateMatchCardManifest(updatedManifest);
             attemptedOutputs.push(outputManifest); writeMatchCardManifest(outputManifest, updatedManifest);
